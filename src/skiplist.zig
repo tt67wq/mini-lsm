@@ -8,8 +8,37 @@ pub fn SkipList(comptime T: type) type {
             next: ?*Node,
             down: ?*Node,
         };
+
+        pub const Iterator = struct {
+            current: *Node,
+            upper_bound: T,
+            lt: *const CmpFn,
+
+            pub fn init(current: *Node, upper_bound: T, lt: *const CmpFn) Iterator {
+                return .{
+                    .current = current,
+                    .upper_bound = upper_bound,
+                    .lt = lt,
+                };
+            }
+
+            pub fn hasNext(self: Iterator) bool {
+                if (self.current.next) |n| {
+                    return self.lt(n.value, self.upper_bound);
+                }
+                return false;
+            }
+
+            pub fn next(self: *Iterator) ?T {
+                if (self.current.next) |n| {
+                    self.current = n;
+                    return n.value;
+                }
+                return null;
+            }
+        };
+
         const Self = @This();
-        const SkipListError = error{};
 
         allocator: std.mem.Allocator,
         rng: std.Random,
@@ -201,6 +230,13 @@ pub fn SkipList(comptime T: type) type {
                 return;
             }
         }
+
+        pub fn iter(self: *Self, lower_bound: T, upper_bound: T) Iterator {
+            const levels = self.allocator.alloc(*Node, self.levels) catch unreachable;
+            defer self.allocator.free(levels);
+            const node = self.descend(lower_bound, levels);
+            return Iterator.init(node, upper_bound, self.lt);
+        }
     };
 }
 
@@ -221,8 +257,17 @@ test "skip list" {
         try list.insert(@intCast(i));
     }
 
-    list.display();
+    // list.display();
 
     const v = list.get(2, &testEqual);
     try std.testing.expect(v != null);
+
+    var iter = list.iter(16, 32);
+    while (iter.hasNext()) {
+        const m = iter.next().?;
+        std.debug.print("{} ", .{m});
+    }
+
+    iter = list.iter(64, 100);
+    try std.testing.expect(!iter.hasNext());
 }
