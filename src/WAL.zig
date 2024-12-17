@@ -84,5 +84,25 @@ test "wal" {
     try wal.sync_meta();
 
     try wal.replay(0, 100, test_reply_func, null);
-    try wal.replay(5000, -1, test_reply_func, null);
+    try wal.replay(400, -1, test_reply_func, null);
+}
+
+test "reopen wal" {
+    defer std.fs.cwd().deleteTree("./tmp/reopen_wal") catch unreachable;
+    var wal = try Self.init("./tmp/reopen_wal");
+    for (0..100) |i| {
+        var buf: [10]u8 = undefined;
+        const ret = try std.fmt.bufPrint(&buf, "Hello {d}", .{i});
+        try wal.append(ret);
+    }
+    try wal.sync();
+    try wal.sync_meta();
+
+    wal.deinit();
+
+    // reopen
+    wal = try Self.init("./tmp/reopen_wal");
+    try wal.replay(0, 100, test_reply_func, null);
+    try wal.replay(20, -1, test_reply_func, null);
+    wal.deinit();
 }
