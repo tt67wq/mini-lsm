@@ -18,6 +18,59 @@ pub fn SkipList(comptime T: type) type {
         levels: usize = 0,
         head: ?*Node = null,
 
+        pub fn init(allocator: std.mem.Allocator, rng: std.Random, lt: *const CmpFn) Self {
+            return .{
+                .allocator = allocator,
+                .rng = rng,
+                .lt = lt,
+                .max_levels = 16,
+            };
+        }
+
+        pub fn deinit(self: *Self) void {
+            if (self.head) |head| {
+                var current = head;
+                while (true) {
+                    const down = current.down;
+                    while (current.next) |next| {
+                        const to_free = current;
+                        current = next;
+                        self.allocator.destroy(to_free);
+                    }
+                    self.allocator.destroy(current);
+
+                    if (down) |d| {
+                        current = d;
+                        continue;
+                    } else {
+                        break;
+                    }
+                }
+            }
+        }
+
+        pub fn display(self: *Self) void {
+            std.debug.print("SkipList Levels: {d}\n", .{self.levels});
+            if (self.head) |node| {
+                var current = node;
+                while (true) {
+                    std.debug.print("{} ", .{current.value});
+                    const down = current.down;
+                    while (current.next) |next| {
+                        std.debug.print("{} ", .{next.value});
+                        current = next;
+                    }
+                    std.debug.print("\n", .{});
+                    if (down) |d| {
+                        current = d;
+                        continue;
+                    } else {
+                        break;
+                    }
+                }
+            }
+        }
+
         //  Descends to the node before `v` if it exists, or to the node before where `v` should be inserted.
         fn descend(self: *Self, v: T, levels: []*Node) *Node {
             if (self.head == null) {
@@ -149,4 +202,27 @@ pub fn SkipList(comptime T: type) type {
             }
         }
     };
+}
+
+fn testComp(a: u32, b: u32) bool {
+    return a < b;
+}
+
+fn testEqual(a: u32, b: u32) bool {
+    return a == b;
+}
+
+test "skip list" {
+    const allocator = std.testing.allocator;
+    var rng = std.rand.DefaultPrng.init(0);
+    var list = SkipList(u32).init(allocator, rng.random(), &testComp);
+    defer list.deinit();
+    for (0..64) |i| {
+        try list.insert(@intCast(i));
+    }
+
+    list.display();
+
+    const v = list.get(2, &testEqual);
+    try std.testing.expect(v != null);
 }
