@@ -1,20 +1,21 @@
 const std = @import("std");
 
-pub fn SkipList(comptime T: type) type {
+pub fn SkipList(comptime Tk: type, comptime Tv: type) type {
     return struct {
-        const CmpFn = fn (a: T, b: T) bool;
+        const CmpFn = fn (a: Tk, b: Tk) bool;
         const Node = struct {
-            value: T,
+            key: Tk,
+            value: Tv,
             next: ?*Node,
             down: ?*Node,
         };
 
         pub const Iterator = struct {
             current: *Node,
-            upper_bound: T,
+            upper_bound: Tk,
             lt: *const CmpFn,
 
-            pub fn init(current: *Node, upper_bound: T, lt: *const CmpFn) Iterator {
+            pub fn init(current: *Node, upper_bound: Tk, lt: *const CmpFn) Iterator {
                 return .{
                     .current = current,
                     .upper_bound = upper_bound,
@@ -24,15 +25,21 @@ pub fn SkipList(comptime T: type) type {
 
             pub fn hasNext(self: Iterator) bool {
                 if (self.current.next) |n| {
-                    return self.lt(n.value, self.upper_bound);
+                    return self.lt(n.key, self.upper_bound);
                 }
                 return false;
             }
 
-            pub fn next(self: *Iterator) ?T {
+            pub fn next(self: *Iterator) ?struct {
+                key: Tk,
+                value: Tv,
+            } {
                 if (self.current.next) |n| {
                     self.current = n;
-                    return n.value;
+                    return .{
+                        .key = n.key,
+                        .value = n.value,
+                    };
                 }
                 return null;
             }
@@ -83,10 +90,10 @@ pub fn SkipList(comptime T: type) type {
             if (self.head) |node| {
                 var current = node;
                 while (true) {
-                    std.debug.print("{} ", .{current.value});
+                    std.debug.print("{} ", .{current.key});
                     const down = current.down;
                     while (current.next) |next| {
-                        std.debug.print("{} ", .{next.value});
+                        std.debug.print("{} ", .{next.key});
                         current = next;
                     }
                     std.debug.print("\n", .{});
@@ -101,7 +108,7 @@ pub fn SkipList(comptime T: type) type {
         }
 
         //  Descends to the node before `v` if it exists, or to the node before where `v` should be inserted.
-        fn descend(self: *Self, v: T, levels: []*Node) *Node {
+        fn descend(self: *Self, key: Tk, levels: []*Node) *Node {
             if (self.head == null) {
                 @panic("Cannot descend on empty list");
             }
@@ -110,13 +117,13 @@ pub fn SkipList(comptime T: type) type {
 
             while (true) {
                 const next = current.next;
-                const next_is_greater_or_end = (next == null) or self.lt(v, next.?.value);
+                const next_is_greater_or_end = (next == null) or self.lt(key, next.?.key);
                 if (!next_is_greater_or_end) {
                     current = next.?;
                     continue;
                 }
 
-                // If the `next` value is greater then `v` lies between `current` and `next`. If we are
+                // If the `next` key is greater then `v` lies between `current` and `next`. If we are
                 // not at the base we descend, otherwise we are at the insertion point and can return.
                 if (next_is_greater_or_end and level > 0) {
                     levels[level] = current;
@@ -129,23 +136,24 @@ pub fn SkipList(comptime T: type) type {
             }
         }
 
-        pub fn get(self: *Self, v: T, equal: *const CmpFn) ?*const T {
+        pub fn get(self: *Self, key: Tk, equal: *const CmpFn) ?*const Tv {
             const head = self.head orelse return null;
-            if (equal(v, head.value)) return &head.value;
-            if (self.lt(v, head.value)) return null;
+            if (equal(key, head.key)) return &head.value;
+            if (self.lt(key, head.key)) return null;
 
             const levels = self.allocator.alloc(*Node, self.levels) catch unreachable;
             defer self.allocator.free(levels);
-            const node = self.descend(v, levels);
-            if (equal(v, node.value)) return &node.value;
+            const node = self.descend(key, levels);
+            if (equal(key, node.key)) return &node.value;
             return null;
         }
 
-        pub fn insert(self: *Self, v: T) !void {
+        pub fn insert(self: *Self, k: Tk, v: Tv) !void {
             var node = try self.allocator.create(Node);
             errdefer self.allocator.destroy(node);
 
             node.* = .{
+                .key = k,
                 .value = v,
                 .next = null,
                 .down = null,
@@ -162,7 +170,7 @@ pub fn SkipList(comptime T: type) type {
 
             // If `v` is less than the head of the list we need to create a new node and make it the new
             // head.
-            if (self.lt(v, head.value)) {
+            if (self.lt(k, head.value)) {
                 node.next = head;
 
                 var head_current = head.down;
@@ -172,6 +180,7 @@ pub fn SkipList(comptime T: type) type {
                     errdefer self.allocator.destroy(new_node);
 
                     new_node.* = .{
+                        .key = k,
                         .value = v,
                         .next = head_current,
                         .down = null,
@@ -187,7 +196,7 @@ pub fn SkipList(comptime T: type) type {
             const levels = try self.allocator.alloc(*Node, self.levels);
             defer self.allocator.free(levels);
 
-            const prev = self.descend(v, levels);
+            const prev = self.descend(k, levels);
             const next = prev.next;
 
             prev.next = node;
@@ -203,6 +212,7 @@ pub fn SkipList(comptime T: type) type {
                 errdefer self.allocator.destroy(new_node);
 
                 new_node.* = .{
+                    .key = k,
                     .value = v,
                     .next = null,
                     .down = down,
@@ -222,6 +232,7 @@ pub fn SkipList(comptime T: type) type {
                 errdefer self.allocator.destroy(new_head);
 
                 new_head.* = .{
+                    .key = self.head.?.key,
                     .value = self.head.?.value,
                     .next = new_node,
                     .down = self.head,
@@ -231,7 +242,7 @@ pub fn SkipList(comptime T: type) type {
             }
         }
 
-        pub fn iter(self: *Self, lower_bound: T, upper_bound: T) Iterator {
+        pub fn iter(self: *Self, lower_bound: Tk, upper_bound: Tk) Iterator {
             const levels = self.allocator.alloc(*Node, self.levels) catch unreachable;
             defer self.allocator.free(levels);
             const node = self.descend(lower_bound, levels);
@@ -251,10 +262,10 @@ fn testEqual(a: u32, b: u32) bool {
 test "skip list" {
     const allocator = std.testing.allocator;
     var rng = std.rand.DefaultPrng.init(0);
-    var list = SkipList(u32).init(allocator, rng.random(), &testComp);
+    var list = SkipList(u32, u32).init(allocator, rng.random(), &testComp);
     defer list.deinit();
     for (0..64) |i| {
-        try list.insert(@intCast(i));
+        try list.insert(@intCast(i), @intCast(i * 2));
     }
 
     // list.display();
@@ -265,7 +276,7 @@ test "skip list" {
     var iter = list.iter(16, 32);
     while (iter.hasNext()) {
         const m = iter.next().?;
-        std.debug.print("{} ", .{m});
+        std.debug.print("k={d} v={d} ", .{ m.key, m.value });
     }
 
     iter = list.iter(64, 100);
