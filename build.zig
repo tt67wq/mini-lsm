@@ -1,4 +1,8 @@
 const std = @import("std");
+const LazyPath = std.Build.LazyPath;
+
+const c_source_files = [_][]const u8{"c_src/swal.c"};
+const c_flags = [_][]const u8{};
 
 // Although this function looks imperative, note that its job is to
 // declaratively construct a build graph that will be executed by an external
@@ -79,6 +83,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const run_exe_unit_tests = b.addRunArtifact(exe_unit_tests);
 
     const skiplist_unit_tests = b.addTest(.{
         .root_source_file = b.path("src/skiplist.zig"),
@@ -87,7 +92,19 @@ pub fn build(b: *std.Build) void {
     });
     const run_skiplist_unit_tests = b.addRunArtifact(skiplist_unit_tests);
 
-    const run_exe_unit_tests = b.addRunArtifact(exe_unit_tests);
+    const wal_unit_tests = b.addTest(.{
+        .root_source_file = b.path("src/WAL.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    wal_unit_tests.linkLibC();
+    wal_unit_tests.addIncludePath(LazyPath{ .cwd_relative = "./include" });
+    wal_unit_tests.addCSourceFiles(.{
+        .files = &c_source_files,
+        .flags = &c_flags,
+    });
+
+    const run_wal_unit_tests = b.addRunArtifact(wal_unit_tests);
 
     // Similar to creating the run step earlier, this exposes a `test` step to
     // the `zig build --help` menu, providing a way for the user to request
@@ -96,4 +113,5 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_lib_unit_tests.step);
     test_step.dependOn(&run_exe_unit_tests.step);
     test_step.dependOn(&run_skiplist_unit_tests.step);
+    test_step.dependOn(&run_wal_unit_tests.step);
 }
