@@ -15,7 +15,7 @@ pub fn SkipList(comptime Tk: type, comptime Tv: type) type {
             upper_bound: Tk,
             lt: *const CmpFn,
 
-            pub fn init(current: *Node, upper_bound: Tk, lt: *const CmpFn) Iterator {
+            pub fn init(current: ?*Node, upper_bound: Tk, lt: *const CmpFn) Iterator {
                 const init_node = Node{
                     .key = undefined,
                     .value = undefined,
@@ -142,15 +142,15 @@ pub fn SkipList(comptime Tk: type, comptime Tv: type) type {
             }
         }
 
-        pub fn get(self: *Self, key: Tk, equal: *const CmpFn) ?*const Tv {
+        pub fn get(self: *Self, key: Tk, equal: *const CmpFn) ?Tv {
             const head = self.head orelse return null;
-            if (equal(key, head.key)) return &head.value;
+            if (equal(key, head.key)) return head.value;
             if (self.lt(key, head.key)) return null;
 
             const levels = self.allocator.alloc(*Node, self.levels) catch unreachable;
             defer self.allocator.free(levels);
             const node = self.descend(key, levels);
-            if (equal(key, node.key)) return &node.value;
+            if (equal(key, node.key)) return node.value;
             return null;
         }
 
@@ -257,6 +257,9 @@ pub fn SkipList(comptime Tk: type, comptime Tv: type) type {
             const levels = self.allocator.alloc(*Node, self.levels) catch unreachable;
             defer self.allocator.free(levels);
             const node = self.descend(lower_bound, levels);
+            if (self.lt(node.key, lower_bound)) {
+                return Iterator.init(null, upper_bound, self.lt);
+            }
             return Iterator.init(node, upper_bound, self.lt);
         }
     };
@@ -298,7 +301,7 @@ test "skip list u8" {
         std.debug.print("k={d} v={d} ", .{ m.key, m.value });
     }
 
-    iter = list.iter(64, 100);
+    iter = list.iter(65, 100);
     try std.testing.expect(!iter.hasNext());
 }
 
