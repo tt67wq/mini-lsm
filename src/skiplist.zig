@@ -11,13 +11,19 @@ pub fn SkipList(comptime Tk: type, comptime Tv: type) type {
         };
 
         pub const Iterator = struct {
-            current: *Node,
+            current: Node,
             upper_bound: Tk,
             lt: *const CmpFn,
 
             pub fn init(current: *Node, upper_bound: Tk, lt: *const CmpFn) Iterator {
+                const init_node = Node{
+                    .key = undefined,
+                    .value = undefined,
+                    .next = current,
+                    .down = undefined,
+                };
                 return .{
-                    .current = current,
+                    .current = init_node,
                     .upper_bound = upper_bound,
                     .lt = lt,
                 };
@@ -35,7 +41,7 @@ pub fn SkipList(comptime Tk: type, comptime Tv: type) type {
                 value: Tv,
             } {
                 if (self.current.next) |n| {
-                    self.current = n;
+                    self.current = n.*;
                     return .{
                         .key = n.key,
                         .value = n.value,
@@ -90,10 +96,10 @@ pub fn SkipList(comptime Tk: type, comptime Tv: type) type {
             if (self.head) |node| {
                 var current = node;
                 while (true) {
-                    std.debug.print("{} ", .{current.key});
+                    std.debug.print("{s} ", .{current.key});
                     const down = current.down;
                     while (current.next) |next| {
-                        std.debug.print("{} ", .{next.key});
+                        std.debug.print("{s} ", .{next.key});
                         current = next;
                     }
                     std.debug.print("\n", .{});
@@ -170,7 +176,11 @@ pub fn SkipList(comptime Tk: type, comptime Tv: type) type {
 
             // If `v` is less than the head of the list we need to create a new node and make it the new
             // head.
-            if (self.lt(k, head.value)) {
+            if (self.lt(k, head.key)) {
+                if (self.lt(head.key, k)) {
+                    // equal, no-op
+                    return;
+                }
                 node.next = head;
 
                 var head_current = head.down;
@@ -242,6 +252,7 @@ pub fn SkipList(comptime Tk: type, comptime Tv: type) type {
             }
         }
 
+        // Returns an iterator over the range `[lower_bound, upper_bound)`.
         pub fn iter(self: *Self, lower_bound: Tk, upper_bound: Tk) Iterator {
             const levels = self.allocator.alloc(*Node, self.levels) catch unreachable;
             defer self.allocator.free(levels);
@@ -259,7 +270,15 @@ fn testEqual(a: u32, b: u32) bool {
     return a == b;
 }
 
-test "skip list" {
+fn testCompBytes(a: []const u8, b: []const u8) bool {
+    return std.mem.lessThan(u8, a, b);
+}
+
+fn testEqualBytes(a: []const u8, b: []const u8) bool {
+    return std.mem.eql(u8, a, b);
+}
+
+test "skip list u8" {
     const allocator = std.testing.allocator;
     var rng = std.rand.DefaultPrng.init(0);
     var list = SkipList(u32, u32).init(allocator, rng.random(), &testComp);
@@ -281,4 +300,43 @@ test "skip list" {
 
     iter = list.iter(64, 100);
     try std.testing.expect(!iter.hasNext());
+}
+
+test "skip list bytes" {
+    const allocator = std.testing.allocator;
+    var rng = std.rand.DefaultPrng.init(0);
+    var list = SkipList([]const u8, []const u8).init(allocator, rng.random(), &testCompBytes);
+    defer list.deinit();
+
+    for (0..10) |i| {
+        const key = std.fmt.allocPrint(allocator, "key-{d}", .{i}) catch unreachable;
+        const val = std.fmt.allocPrint(allocator, "value-{d}", .{i}) catch unreachable;
+        std.debug.print("insert {s} => {s}\n", .{ key, val });
+        try list.insert(key, val);
+    }
+
+    list.display();
+    std.debug.print("--------------------\n", .{});
+
+    var iter = list.iter("key", "key-99");
+    var to_free_key: []const u8 = undefined;
+    var to_free_val: []const u8 = undefined;
+    var first = true;
+    while (iter.hasNext()) {
+        const m = iter.next().?;
+        std.debug.print("k={s} v={s}\n", .{ m.key, m.value });
+        if (!first) {
+            allocator.free(to_free_key);
+            allocator.free(to_free_val);
+        }
+        to_free_key = m.key;
+        to_free_val = m.value;
+        first = false;
+    }
+    if (!first) {
+        allocator.free(to_free_key);
+        allocator.free(to_free_val);
+    }
+
+    std.debug.print("--------------------\n", .{});
 }
