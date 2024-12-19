@@ -1,18 +1,20 @@
 const std = @import("std");
 const skiplist = @import("skiplist.zig");
 const Wal = @import("Wal.zig");
+const atomic = std.atomic;
 
 const Self = @This();
 const MemtableError = error{
     NotFound,
 };
+const Map = skiplist.SkipList([]const u8, []const u8);
 
 const max_key = "Ω";
 
-map: *skiplist.SkipList([]const u8, []const u8),
+map: *Map,
 wal: Wal,
 id: usize,
-approximate_size: usize,
+approximate_size: atomic.Value(usize),
 allocator: std.mem.Allocator,
 
 fn compFunc(a: []const u8, b: []const u8) bool {
@@ -29,15 +31,16 @@ fn equalFunc(a: []const u8, b: []const u8) bool {
     return std.mem.eql(u8, a, b);
 }
 
-pub fn init(id: usize, allocator: std.mem.Allocator, path: []const u8) Self {
+pub fn init(id: usize, allocator: std.mem.Allocator, path: []const u8) !Self {
     var rng = std.rand.DefaultPrng.init(0);
-    var list = skiplist.SkipList([]const u8, []const u8).init(
+    const map = try allocator.create(Map);
+    map.* = skiplist.SkipList([]const u8, []const u8).init(
         allocator,
         rng.random(),
         compFunc,
     );
     return Self{
-        .map = &list,
+        .map = map,
         .wal = Wal.init(path) catch |err| {
             std.log.err("failed to create wal: {s}", .{@errorName(err)});
             @panic("failed to create wal");
@@ -49,7 +52,14 @@ pub fn init(id: usize, allocator: std.mem.Allocator, path: []const u8) Self {
 }
 
 pub fn deinit(self: *Self) void {
+    var iterator = self.map.iter("", max_key);
+    while (iterator.hasNext()) {
+        const kv = iterator.next().?;
+        self.allocator.free(kv.key);
+        self.allocator.free(kv.value);
+    }
     self.map.deinit();
+    self.allocator.destroy(self.map);
     self.wal.deinit();
 }
 
@@ -62,11 +72,11 @@ fn deserializeInteger(comptime T: type, buf: []const u8) T {
 }
 
 // [length: 4bytes][bytes]
-pub fn serializeBytes(allocator: std.mem.Allocator, bytes: []const u8) ![]const u8 {
+pub fn serializeBytes(bytes: []const u8, buf: *std.ArrayList(u8)) !void {
     var h: [4]u8 = undefined;
     serializeInteger(u32, @intCast(bytes.len), &h);
-    const parts = [_][]const u8{ &h, bytes };
-    return std.mem.concat(allocator, u8, &parts);
+    try buf.appendSlice(h[0..4]);
+    try buf.appendSlice(bytes);
 }
 
 pub fn deserializeBytes(bytes: []const u8, buf: *[]const u8) usize {
@@ -77,20 +87,20 @@ pub fn deserializeBytes(bytes: []const u8, buf: *[]const u8) usize {
 }
 
 pub fn put(self: Self, key: []const u8, value: []const u8) !void {
-    const k = try serializeBytes(self.allocator, key);
-    defer self.allocator.free(k);
-    const v = try serializeBytes(self.allocator, value);
-    defer self.allocator.free(v);
     var id: [4]u8 = undefined;
     serializeInteger(u32, @intCast(self.id), &id);
     var buf = std.ArrayList(u8).init(self.allocator);
+    defer buf.deinit();
     try buf.appendSlice(id[0..4]);
-    try buf.appendSlice(k);
-    try buf.appendSlice(v);
-    try self.wal.append(try buf.toOwnedSlice());
 
-    const kk = try self.allocator.dupeZ(u8, key);
-    const vv = try self.allocator.dupeZ(u8, value);
+    try serializeBytes(key, &buf);
+    try serializeBytes(value, &buf);
+    try self.wal.append(buf.items);
+
+    const kk = try self.allocator.dupe(u8, key);
+    errdefer self.allocator.free(kk);
+    const vv = try self.allocator.dupe(u8, value);
+    errdefer self.allocator.free(vv);
     try self.map.insert(kk, vv);
 }
 
@@ -103,9 +113,17 @@ pub fn get(self: Self, key: []const u8, val: *[]const u8) !void {
     }
 }
 
-test "put" {
+pub fn sync_wal(self: Self) !void {
+    try self.wal.sync();
+}
+
+pub fn is_empty(self: Self) bool {
+    return self.map.is_empty();
+}
+
+test "put/get" {
     const allocator = std.testing.allocator;
-    var mm = Self.init(0, allocator, "./tmp/test.mm");
+    var mm = try Self.init(0, allocator, "./tmp/test.mm");
     defer mm.deinit();
     try mm.put("foo", "bar");
     var val: []const u8 = undefined;

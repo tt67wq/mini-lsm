@@ -264,6 +264,13 @@ pub fn SkipList(comptime Tk: type, comptime Tv: type) type {
             }
             return Iterator.init(node, upper_bound, self.lt);
         }
+
+        pub fn is_empty(self: *Self) bool {
+            if (self.head) |_| {
+                return false;
+            }
+            return true;
+        }
     };
 }
 
