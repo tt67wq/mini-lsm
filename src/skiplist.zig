@@ -5,7 +5,7 @@ pub fn SkipList(comptime Tk: type, comptime Tv: type) type {
         const CmpFn = fn (a: Tk, b: Tk) bool;
         const Node = struct {
             key: Tk,
-            value: Tv,
+            value: ?Tv,
             next: ?*Node,
             down: ?*Node,
         };
@@ -38,7 +38,7 @@ pub fn SkipList(comptime Tk: type, comptime Tv: type) type {
 
             pub fn next(self: *Iterator) ?struct {
                 key: Tk,
-                value: Tv,
+                value: ?Tv,
             } {
                 if (self.current.next) |n| {
                     self.current = n.*;
@@ -56,15 +56,22 @@ pub fn SkipList(comptime Tk: type, comptime Tv: type) type {
         allocator: std.mem.Allocator,
         rng: std.Random,
         lt: *const CmpFn,
+        eq: *const CmpFn,
         max_levels: usize,
         levels: usize = 0,
         head: ?*Node = null,
 
-        pub fn init(allocator: std.mem.Allocator, rng: std.Random, lt: *const CmpFn) Self {
+        pub fn init(
+            allocator: std.mem.Allocator,
+            rng: std.Random,
+            lt: *const CmpFn,
+            eq: *const CmpFn,
+        ) Self {
             return .{
                 .allocator = allocator,
                 .rng = rng,
                 .lt = lt,
+                .eq = eq,
                 .max_levels = 16,
                 .levels = 0,
                 .head = null,
@@ -115,7 +122,8 @@ pub fn SkipList(comptime Tk: type, comptime Tv: type) type {
             }
         }
 
-        //  Descends to the node before `v` if it exists, or to the node before where `v` should be inserted.
+        //  Descends to the node before `key` if it exists, or to the node before where `v` should be inserted.
+        // Find the biggest node less or equal to `key`.
         fn descend(self: *Self, key: Tk, levels: []*Node) *Node {
             if (self.head == null) {
                 @panic("Cannot descend on empty list");
@@ -144,19 +152,19 @@ pub fn SkipList(comptime Tk: type, comptime Tv: type) type {
             }
         }
 
-        pub fn get(self: *Self, key: Tk, equal: *const CmpFn) ?Tv {
+        pub fn get(self: *Self, key: Tk) ?Tv {
             const head = self.head orelse return null;
-            if (equal(key, head.key)) return head.value;
+            if (self.eq(key, head.key)) return head.value;
             if (self.lt(key, head.key)) return null;
 
             const levels = self.allocator.alloc(*Node, self.levels) catch unreachable;
             defer self.allocator.free(levels);
             const node = self.descend(key, levels);
-            if (equal(key, node.key)) return node.value;
+            if (self.eq(key, node.key)) return node.value;
             return null;
         }
 
-        pub fn insert(self: *Self, k: Tk, v: Tv) !void {
+        pub fn insert(self: *Self, k: Tk, v: ?Tv) !void {
             var node = try self.allocator.create(Node);
             errdefer self.allocator.destroy(node);
 
@@ -176,13 +184,9 @@ pub fn SkipList(comptime Tk: type, comptime Tv: type) type {
                 return;
             }
 
-            // If `v` is less than the head of the list we need to create a new node and make it the new
+            // If `k` is less than the head of the list we need to create a new node and make it the new
             // head.
             if (self.lt(k, head.key)) {
-                if (self.lt(head.key, k)) {
-                    // equal, no-op
-                    return;
-                }
                 node.next = head;
 
                 var head_current = head.down;
@@ -209,11 +213,17 @@ pub fn SkipList(comptime Tk: type, comptime Tv: type) type {
             defer self.allocator.free(levels);
 
             const prev = self.descend(k, levels);
+            if (self.eq(prev.key, k)) {
+                prev.value = v;
+                self.allocator.destroy(node);
+                return;
+            }
             const next = prev.next;
 
             prev.next = node;
             node.next = next;
 
+            // build index
             const max_levels = @min(self.levels + 1, self.max_levels);
             const random = self.rng.int(u32);
             var down = node;
@@ -225,7 +235,7 @@ pub fn SkipList(comptime Tk: type, comptime Tv: type) type {
 
                 new_node.* = .{
                     .key = k,
-                    .value = v,
+                    .value = null,
                     .next = null,
                     .down = down,
                 };
@@ -293,21 +303,22 @@ fn testEqualBytes(a: []const u8, b: []const u8) bool {
 test "skip list u8" {
     const allocator = std.testing.allocator;
     var rng = std.rand.DefaultPrng.init(0);
-    var list = SkipList(u32, u32).init(allocator, rng.random(), &testComp);
+    var list = SkipList(u32, u32).init(allocator, rng.random(), testComp, testEqual);
     defer list.deinit();
     for (0..64) |i| {
-        try list.insert(@intCast(i), @intCast(i * 2));
+        if (i % 2 == 0) {
+            try list.insert(@intCast(i), @intCast(i * 2));
+        }
     }
 
     // list.display();
 
-    const v = list.get(2, &testEqual);
-    try std.testing.expect(v != null);
+    _ = list.get(2).?;
 
     var iter = list.iter(16, 32);
     while (iter.hasNext()) {
         const m = iter.next().?;
-        std.debug.print("k={d} v={d}\n", .{ m.key, m.value });
+        std.debug.print("k={d} v={d}\n", .{ m.key, m.value.? });
     }
 
     iter = list.iter(65, 100);
@@ -317,7 +328,12 @@ test "skip list u8" {
 test "skip list bytes" {
     const allocator = std.testing.allocator;
     var rng = std.rand.DefaultPrng.init(0);
-    var list = SkipList([]const u8, []const u8).init(allocator, rng.random(), &testCompBytes);
+    var list = SkipList([]const u8, []const u8).init(
+        allocator,
+        rng.random(),
+        testCompBytes,
+        testEqualBytes,
+    );
     defer list.deinit();
 
     for (0..10) |i| {
@@ -336,13 +352,13 @@ test "skip list bytes" {
     var first = true;
     while (iter.hasNext()) {
         const m = iter.next().?;
-        std.debug.print("k={s} v={s}\n", .{ m.key, m.value });
+        std.debug.print("k={s} v={s}\n", .{ m.key, m.value.? });
         if (!first) {
             allocator.free(to_free_key);
             allocator.free(to_free_val);
         }
         to_free_key = m.key;
-        to_free_val = m.value;
+        to_free_val = m.value.?;
         first = false;
     }
     if (!first) {
