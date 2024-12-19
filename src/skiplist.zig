@@ -66,6 +66,8 @@ pub fn SkipList(comptime Tk: type, comptime Tv: type) type {
                 .rng = rng,
                 .lt = lt,
                 .max_levels = 16,
+                .levels = 0,
+                .head = null,
             };
         }
 
@@ -298,7 +300,7 @@ test "skip list u8" {
     var iter = list.iter(16, 32);
     while (iter.hasNext()) {
         const m = iter.next().?;
-        std.debug.print("k={d} v={d} ", .{ m.key, m.value });
+        std.debug.print("k={d} v={d}\n", .{ m.key, m.value });
     }
 
     iter = list.iter(65, 100);
