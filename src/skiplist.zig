@@ -1,4 +1,5 @@
 const std = @import("std");
+const SkipListError = error{};
 
 pub fn SkipList(comptime Tk: type, comptime Tv: type) type {
     return struct {
@@ -215,7 +216,6 @@ pub fn SkipList(comptime Tk: type, comptime Tv: type) type {
             const prev = self.descend(k, levels);
             if (self.eq(prev.key, k)) {
                 prev.value = v;
-                self.allocator.destroy(node);
                 return;
             }
             const next = prev.next;

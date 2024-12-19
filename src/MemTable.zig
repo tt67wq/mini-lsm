@@ -1,21 +1,21 @@
 const std = @import("std");
 const skiplist = @import("skiplist.zig");
 const Wal = @import("Wal.zig");
-const atomic = std.atomic;
 
 const Self = @This();
 const MemtableError = error{
     NotFound,
 };
 const Map = skiplist.SkipList([]const u8, []const u8);
+const GC = std.ArrayList([]const u8);
 
 const max_key = "Ω";
 
 map: *Map,
 wal: Wal,
 id: usize,
-approximate_size: atomic.Value(usize),
 allocator: std.mem.Allocator,
+gabbage: *GC,
 
 fn compFunc(a: []const u8, b: []const u8) bool {
     if (std.mem.eql(u8, b, max_key)) {
@@ -38,7 +38,10 @@ pub fn init(id: usize, allocator: std.mem.Allocator, path: []const u8) !Self {
         allocator,
         rng.random(),
         compFunc,
+        equalFunc,
     );
+    const gc: *GC = try allocator.create(GC);
+    gc.* = std.ArrayList([]const u8).init(allocator);
     return Self{
         .map = map,
         .wal = Wal.init(path) catch |err| {
@@ -46,21 +49,22 @@ pub fn init(id: usize, allocator: std.mem.Allocator, path: []const u8) !Self {
             @panic("failed to create wal");
         },
         .id = id,
-        .approximate_size = 0,
         .allocator = allocator,
+        .gabbage = gc,
     };
 }
 
 pub fn deinit(self: *Self) void {
-    var iterator = self.map.iter("", max_key);
-    while (iterator.hasNext()) {
-        const kv = iterator.next().?;
-        self.allocator.free(kv.key);
-        self.allocator.free(kv.value);
-    }
     self.map.deinit();
     self.allocator.destroy(self.map);
     self.wal.deinit();
+
+    // free gabbage
+    for (self.gabbage.items) |item| {
+        self.allocator.free(item);
+    }
+    self.gabbage.deinit();
+    self.allocator.destroy(self.gabbage);
 }
 
 fn serializeInteger(comptime T: type, i: T, buf: *[@sizeOf(T)]u8) void {
@@ -102,10 +106,21 @@ pub fn put(self: Self, key: []const u8, value: []const u8) !void {
     const vv = try self.allocator.dupe(u8, value);
     errdefer self.allocator.free(vv);
     try self.map.insert(kk, vv);
+    try self.gabbage.append(kk);
+    try self.gabbage.append(vv);
+}
+
+fn may_gc(self: Self) void {
+    if (self.gabbage.items.len > 4096) {
+        for (self.gabbage.items) |item| {
+            self.allocator.free(item);
+        }
+        self.gabbage.clearRetainingCapacity();
+    }
 }
 
 pub fn get(self: Self, key: []const u8, val: *[]const u8) !void {
-    const v = self.map.get(key, equalFunc);
+    const v = self.map.get(key);
     if (v) |vv| {
         val.* = vv;
     } else {
