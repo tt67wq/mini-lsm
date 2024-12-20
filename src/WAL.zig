@@ -63,12 +63,16 @@ pub fn replay(self: Self, offset: usize, limit: i64, reply_func: swal.swal_repla
     }
 }
 
-fn test_reply_func(log: ?*const anyopaque, size: usize, _: ?*anyopaque) callconv(.C) usize {
-    var content: []const u8 = undefined;
-    content.ptr = @ptrCast(log.?);
-    std.debug.print("size: {d}, log: {s}", .{ size, content[0..size] });
-    std.debug.print("\n", .{});
-    return 0;
+pub fn reset(self: Self, offset: usize) void {
+    _ = swal.swal_reset(self.wal, offset, 0);
+}
+
+pub fn start_offset(self: Self) usize {
+    return swal.swal_start_offset(self.wal);
+}
+
+pub fn end_offset(self: Self) usize {
+    return swal.swal_end_offset(self.wal);
 }
 
 test "wal" {
@@ -83,8 +87,18 @@ test "wal" {
     try wal.sync();
     try wal.sync_meta();
 
-    try wal.replay(0, 100, test_reply_func, null);
-    try wal.replay(400, -1, test_reply_func, null);
+    const replyer = struct {
+        pub fn reply(log: ?*const anyopaque, size: usize, _: ?*anyopaque) callconv(.C) usize {
+            var content: []const u8 = undefined;
+            content.ptr = @ptrCast(log.?);
+            std.debug.print("size: {d}, log: {s}", .{ size, content[0..size] });
+            std.debug.print("\n", .{});
+            return 0;
+        }
+    };
+
+    try wal.replay(0, 100, replyer.reply, null);
+    try wal.replay(400, -1, replyer.reply, null);
 }
 
 test "reopen wal" {
@@ -100,9 +114,40 @@ test "reopen wal" {
 
     wal.deinit();
 
+    const replyer = struct {
+        pub fn reply(log: ?*const anyopaque, size: usize, _: ?*anyopaque) callconv(.C) usize {
+            var content: []const u8 = undefined;
+            content.ptr = @ptrCast(log.?);
+            std.debug.print("size: {d}, log: {s}", .{ size, content[0..size] });
+            std.debug.print("\n", .{});
+            return 0;
+        }
+    };
+
     // reopen
     wal = try Self.init("./tmp/reopen_wal");
-    try wal.replay(0, 100, test_reply_func, null);
-    try wal.replay(20, -1, test_reply_func, null);
+    try wal.replay(0, 100, replyer.reply, null);
+    try wal.replay(20, -1, replyer.reply, null);
+    try wal.replay(0, -1, replyer.reply, null);
     wal.deinit();
+}
+
+test "reset" {
+    defer std.fs.cwd().deleteTree("./tmp/reset_wal") catch unreachable;
+    var wal = try Self.init("./tmp/reset_wal");
+    for (0..100) |i| {
+        var buf: [10]u8 = undefined;
+        const ret = try std.fmt.bufPrint(&buf, "Hello {d}", .{i});
+        try wal.append(ret);
+    }
+    try wal.sync();
+    try wal.sync_meta();
+
+    std.debug.print("start offset: {d}\n", .{wal.start_offset()});
+    std.debug.print("end offset: {d}\n", .{wal.end_offset()});
+
+    wal.reset(700);
+
+    std.debug.print("start offset: {d}\n", .{wal.start_offset()});
+    std.debug.print("end offset: {d}\n", .{wal.end_offset()});
 }
