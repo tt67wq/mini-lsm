@@ -125,7 +125,7 @@ pub fn SkipList(comptime Tk: type, comptime Tv: type) type {
 
         //  Descends to the node before `key` if it exists, or to the node before where `v` should be inserted.
         // Find the biggest node less or equal to `key`.
-        fn descend(self: *Self, key: Tk, levels: []*Node) *Node {
+        fn descend(self: Self, key: Tk, levels: []*Node) *Node {
             if (self.head == null) {
                 @panic("Cannot descend on empty list");
             }
@@ -265,7 +265,7 @@ pub fn SkipList(comptime Tk: type, comptime Tv: type) type {
         }
 
         // Returns an iterator over the range `[lower_bound, upper_bound)`.
-        pub fn iter(self: *Self, lower_bound: Tk, upper_bound: Tk) Iterator {
+        pub fn iter(self: Self, lower_bound: Tk, upper_bound: Tk) Iterator {
             const levels = self.allocator.alloc(*Node, self.levels) catch unreachable;
             defer self.allocator.free(levels);
             const node = self.descend(lower_bound, levels);
