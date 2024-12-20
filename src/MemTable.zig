@@ -112,30 +112,9 @@ pub fn recover_from_wal(self: *Self) !void {
 
                 var mm: *Self = @ptrCast(@alignCast(mm_ptr.?));
 
-                const kk = mm.allocator.dupe(u8, kbuf) catch |err| {
-                    std.log.err("failed to dup key: {s}", .{@errorName(err)});
-                    @panic("failed to dup key");
-                };
-                errdefer mm.allocator.free(kk);
-                const vv = mm.allocator.dupe(u8, vbuf) catch |err| {
-                    std.log.err("failed to dup value: {s}", .{@errorName(err)});
-                    @panic("failed to dup value");
-                };
-                errdefer mm.allocator.free(vv);
-                if (mm.lock.tryLock()) {
-                    defer mm.lock.unlock();
-                    mm.map.insert(kk, vv) catch |err| {
-                        std.log.err("failed to insert: {s}", .{@errorName(err)});
-                        @panic("failed to insert");
-                    };
-                }
-                mm.gabbage.append(kk) catch |err| {
-                    std.log.err("failed to append: {s}", .{@errorName(err)});
-                    @panic("failed to append");
-                };
-                mm.gabbage.append(vv) catch |err| {
-                    std.log.err("failed to append: {s}", .{@errorName(err)});
-                    @panic("failed to append");
+                mm.put_to_list(kbuf, vbuf) catch |err| {
+                    std.log.err("failed to put to list: {s}", .{@errorName(err)});
+                    @panic("failed to put to list");
                 };
             }
             return 0;
@@ -145,14 +124,7 @@ pub fn recover_from_wal(self: *Self) !void {
     try self.wal.replay(0, -1, replyer.reply, @ptrCast(self));
 }
 
-pub fn put(self: Self, key: []const u8, value: []const u8) !void {
-    // [key-size: 4bytes][key][value-size: 4bytes][value]
-    var buf = std.ArrayList(u8).init(self.allocator);
-    defer buf.deinit();
-    try serializeBytes(key, &buf);
-    try serializeBytes(value, &buf);
-    try self.wal.append(buf.items);
-
+fn put_to_list(self: Self, key: []const u8, value: []const u8) !void {
     const kk = try self.allocator.dupe(u8, key);
     errdefer self.allocator.free(kk);
     const vv = try self.allocator.dupe(u8, value);
@@ -164,6 +136,17 @@ pub fn put(self: Self, key: []const u8, value: []const u8) !void {
     try self.gabbage.append(kk);
     try self.gabbage.append(vv);
     self.may_gc();
+}
+
+pub fn put(self: Self, key: []const u8, value: []const u8) !void {
+    // [key-size: 4bytes][key][value-size: 4bytes][value]
+    var buf = std.ArrayList(u8).init(self.allocator);
+    defer buf.deinit();
+    try serializeBytes(key, &buf);
+    try serializeBytes(value, &buf);
+    try self.wal.append(buf.items);
+
+    try self.put_to_list(key, value);
 }
 
 fn may_gc(self: Self) void {
