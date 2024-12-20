@@ -56,7 +56,7 @@ fn equalFunc(a: []const u8, b: []const u8) bool {
     return std.mem.eql(u8, a, b);
 }
 
-pub fn init(id: usize, allocator: std.mem.Allocator, path: ?[]const u8) !Self {
+pub fn init(id: usize, allocator: std.mem.Allocator, path: ?[]const u8) Self {
     var rng = std.rand.DefaultPrng.init(0);
 
     return Self{
@@ -214,7 +214,7 @@ pub fn iter(self: *Self, lower_bound: []const u8, upper_bound: []const u8) MemTa
 test "put/get" {
     const allocator = std.testing.allocator;
     defer std.fs.cwd().deleteTree("./tmp/test.mm") catch unreachable;
-    var mm = try Self.init(0, allocator, "./tmp/test.mm");
+    var mm = Self.init(0, allocator, "./tmp/test.mm");
     defer mm.deinit();
     try mm.put("foo", "bar");
     var val: []const u8 = undefined;
@@ -225,7 +225,7 @@ test "put/get" {
 test "recover" {
     const allocator = std.testing.allocator;
     defer std.fs.cwd().deleteTree("./tmp/recover.mm") catch unreachable;
-    var mm = try Self.init(0, allocator, "./tmp/recover.mm");
+    var mm = Self.init(0, allocator, "./tmp/recover.mm");
     try mm.put("foo", "bar");
     try mm.put("foo1", "bar1");
     try mm.put("foo2", "bar2");
@@ -234,7 +234,7 @@ test "recover" {
     mm.deinit();
 
     // reopen
-    mm = try Self.init(0, allocator, "./tmp/recover.mm");
+    mm = Self.init(0, allocator, "./tmp/recover.mm");
     defer mm.deinit();
     try mm.recover_from_wal();
 
@@ -246,7 +246,7 @@ test "recover" {
 test "iter" {
     const allocator = std.testing.allocator;
     defer std.fs.cwd().deleteTree("./tmp/iter.mm") catch unreachable;
-    var mm = try Self.init(0, allocator, "./tmp/iter.mm");
+    var mm = Self.init(0, allocator, "./tmp/iter.mm");
     defer mm.deinit();
     try mm.put("foo", "bar");
     try mm.put("foo1", "bar1");
