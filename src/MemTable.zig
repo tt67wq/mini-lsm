@@ -1,4 +1,5 @@
 const std = @import("std");
+const atomic = std.atomic;
 const skiplist = @import("skiplist.zig");
 const Wal = @import("Wal.zig");
 const RwLock = std.Thread.RwLock;
@@ -33,12 +34,13 @@ const MemTableIterator = struct {
 
 const max_key = "Ω";
 
-map: *Map,
-lock: *RwLock,
-wal: Wal,
+map: Map,
+lock: RwLock,
+wal: ?Wal,
 id: usize,
 allocator: std.mem.Allocator,
-gabbage: *GC,
+gabbage: GC,
+approximate_size: atomic.Value(usize) = atomic.Value(usize).init(0),
 
 fn compFunc(a: []const u8, b: []const u8) bool {
     if (std.mem.eql(u8, b, max_key)) {
@@ -54,45 +56,45 @@ fn equalFunc(a: []const u8, b: []const u8) bool {
     return std.mem.eql(u8, a, b);
 }
 
-pub fn init(id: usize, allocator: std.mem.Allocator, path: []const u8) !Self {
+pub fn init(id: usize, allocator: std.mem.Allocator, path: ?[]const u8) !Self {
     var rng = std.rand.DefaultPrng.init(0);
-    const map = try allocator.create(Map);
-    map.* = skiplist.SkipList([]const u8, []const u8).init(
-        allocator,
-        rng.random(),
-        compFunc,
-        equalFunc,
-    );
-    const gc: *GC = try allocator.create(GC);
-    gc.* = std.ArrayList([]const u8).init(allocator);
 
-    const lock = try allocator.create(RwLock);
-    lock.* = .{};
     return Self{
-        .map = map,
-        .wal = Wal.init(path) catch |err| {
-            std.log.err("failed to create wal: {s}", .{@errorName(err)});
-            @panic("failed to create wal");
-        },
+        .map = skiplist.SkipList([]const u8, []const u8).init(
+            allocator,
+            rng.random(),
+            compFunc,
+            equalFunc,
+        ),
+        .wal = wal_init(path),
         .id = id,
         .allocator = allocator,
-        .gabbage = gc,
-        .lock = lock,
+        .gabbage = std.ArrayList([]const u8).init(allocator),
+        .lock = .{},
     };
+}
+
+fn wal_init(path: ?[]const u8) ?Wal {
+    if (path) |p| {
+        return Wal.init(p) catch |err| {
+            std.log.err("failed to create wal: {s}", .{@errorName(err)});
+            @panic("failed to create wal");
+        };
+    }
+    return null;
 }
 
 pub fn deinit(self: *Self) void {
     self.map.deinit();
-    self.allocator.destroy(self.map);
-    self.wal.deinit();
-    self.allocator.destroy(self.lock);
+    if (self.wal) |_| {
+        self.wal.?.deinit();
+    }
 
     // free gabbage
     for (self.gabbage.items) |item| {
         self.allocator.free(item);
     }
     self.gabbage.deinit();
-    self.allocator.destroy(self.gabbage);
 }
 
 fn serializeInteger(comptime T: type, i: T, buf: *[@sizeOf(T)]u8) void {
@@ -142,10 +144,12 @@ pub fn recover_from_wal(self: *Self) !void {
         }
     };
 
-    try self.wal.replay(0, -1, replyer.reply, @ptrCast(self));
+    if (self.wal) |_| {
+        try self.wal.?.replay(0, -1, replyer.reply, @ptrCast(self));
+    }
 }
 
-fn put_to_list(self: Self, key: []const u8, value: []const u8) !void {
+fn put_to_list(self: *Self, key: []const u8, value: []const u8) !void {
     const kk = try self.allocator.dupe(u8, key);
     errdefer self.allocator.free(kk);
     const vv = try self.allocator.dupe(u8, value);
@@ -156,30 +160,27 @@ fn put_to_list(self: Self, key: []const u8, value: []const u8) !void {
     }
     try self.gabbage.append(kk);
     try self.gabbage.append(vv);
-    self.may_gc();
+
+    _ = self.approximate_size.fetchAdd(@intCast(key.len + value.len), .monotonic);
 }
 
-pub fn put(self: Self, key: []const u8, value: []const u8) !void {
+fn put_to_wal(self: Self, key: []const u8, value: []const u8) !void {
     // [key-size: 4bytes][key][value-size: 4bytes][value]
-    var buf = std.ArrayList(u8).init(self.allocator);
-    defer buf.deinit();
-    try serializeBytes(key, &buf);
-    try serializeBytes(value, &buf);
-    try self.wal.append(buf.items);
-
-    try self.put_to_list(key, value);
-}
-
-fn may_gc(self: Self) void {
-    if (self.gabbage.items.len > 4096) {
-        for (self.gabbage.items) |item| {
-            self.allocator.free(item);
-        }
-        self.gabbage.clearRetainingCapacity();
+    if (self.wal) |w| {
+        var buf = std.ArrayList(u8).init(self.allocator);
+        defer buf.deinit();
+        try serializeBytes(key, &buf);
+        try serializeBytes(value, &buf);
+        try w.append(buf.items);
     }
 }
 
-pub fn get(self: Self, key: []const u8, val: *[]const u8) !void {
+pub fn put(self: *Self, key: []const u8, value: []const u8) !void {
+    try self.put_to_wal(key, value);
+    try self.put_to_list(key, value);
+}
+
+pub fn get(self: *Self, key: []const u8, val: *[]const u8) !void {
     if (self.lock.tryLockShared()) {
         defer self.lock.unlockShared();
         const v = self.map.get(key);
@@ -192,15 +193,21 @@ pub fn get(self: Self, key: []const u8, val: *[]const u8) !void {
 }
 
 pub fn sync_wal(self: Self) !void {
-    try self.wal.sync();
+    if (self.wal) |w| {
+        try w.sync();
+    }
 }
 
 pub fn is_empty(self: Self) bool {
     return self.map.is_empty();
 }
 
+pub fn get_approximate_size(self: Self) usize {
+    return self.approximate_size.load(.monotonic);
+}
+
 // get a iterator over range [lower_bound, upper_bound)
-pub fn iter(self: Self, lower_bound: []const u8, upper_bound: []const u8) MemTableIterator {
+pub fn iter(self: *Self, lower_bound: []const u8, upper_bound: []const u8) MemTableIterator {
     return MemTableIterator.init(self.map.iter(lower_bound, upper_bound));
 }
 
