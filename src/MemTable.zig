@@ -9,6 +9,27 @@ const MemtableError = error{
 };
 const Map = skiplist.SkipList([]const u8, []const u8);
 const GC = std.ArrayList([]const u8);
+const MemTableIterator = struct {
+    iter: Map.Iterator,
+
+    pub fn init(m: Map.Iterator) MemTableIterator {
+        return MemTableIterator{
+            .iter = m,
+        };
+    }
+
+    pub fn hasNext(self: MemTableIterator) bool {
+        return self.iter.hasNext();
+    }
+
+    pub fn next(self: *MemTableIterator, key: *[]const u8, value: *[]const u8) void {
+        const p = self.iter.next().?;
+        key.* = p.key;
+        if (p.value) |v| {
+            value.* = v;
+        }
+    }
+};
 
 const max_key = "Ω";
 
@@ -178,6 +199,11 @@ pub fn is_empty(self: Self) bool {
     return self.map.is_empty();
 }
 
+// get a iterator over range [lower_bound, upper_bound)
+pub fn iter(self: Self, lower_bound: []const u8, upper_bound: []const u8) MemTableIterator {
+    return MemTableIterator.init(self.map.iter(lower_bound, upper_bound));
+}
+
 test "put/get" {
     const allocator = std.testing.allocator;
     defer std.fs.cwd().deleteTree("./tmp/test.mm") catch unreachable;
@@ -208,4 +234,22 @@ test "recover" {
     var val: []const u8 = undefined;
     try mm.get("foo", &val);
     try std.testing.expectEqualStrings("bar", val);
+}
+
+test "iter" {
+    const allocator = std.testing.allocator;
+    defer std.fs.cwd().deleteTree("./tmp/iter.mm") catch unreachable;
+    var mm = try Self.init(0, allocator, "./tmp/iter.mm");
+    defer mm.deinit();
+    try mm.put("foo", "bar");
+    try mm.put("foo1", "bar1");
+    try mm.put("foo2", "bar2");
+
+    var it = mm.iter("foo", max_key);
+    var key: []const u8 = undefined;
+    var val: []const u8 = undefined;
+    while (it.hasNext()) {
+        it.next(&key, &val);
+        std.debug.print("key: {s}, val: {s}\n", .{ key, val });
+    }
 }
