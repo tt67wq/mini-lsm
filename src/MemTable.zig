@@ -1,6 +1,7 @@
 const std = @import("std");
 const skiplist = @import("skiplist.zig");
 const Wal = @import("Wal.zig");
+const RwLock = std.Thread.RwLock;
 
 const Self = @This();
 const MemtableError = error{
@@ -12,6 +13,7 @@ const GC = std.ArrayList([]const u8);
 const max_key = "Ω";
 
 map: *Map,
+lock: *RwLock,
 wal: Wal,
 id: usize,
 allocator: std.mem.Allocator,
@@ -42,6 +44,9 @@ pub fn init(id: usize, allocator: std.mem.Allocator, path: []const u8) !Self {
     );
     const gc: *GC = try allocator.create(GC);
     gc.* = std.ArrayList([]const u8).init(allocator);
+
+    const lock = try allocator.create(RwLock);
+    lock.* = .{};
     return Self{
         .map = map,
         .wal = Wal.init(path) catch |err| {
@@ -51,6 +56,7 @@ pub fn init(id: usize, allocator: std.mem.Allocator, path: []const u8) !Self {
         .id = id,
         .allocator = allocator,
         .gabbage = gc,
+        .lock = lock,
     };
 }
 
@@ -58,6 +64,7 @@ pub fn deinit(self: *Self) void {
     self.map.deinit();
     self.allocator.destroy(self.map);
     self.wal.deinit();
+    self.allocator.destroy(self.lock);
 
     // free gabbage
     for (self.gabbage.items) |item| {
@@ -76,27 +83,72 @@ fn deserializeInteger(comptime T: type, buf: []const u8) T {
 }
 
 // [length: 4bytes][bytes]
-pub fn serializeBytes(bytes: []const u8, buf: *std.ArrayList(u8)) !void {
+fn serializeBytes(bytes: []const u8, buf: *std.ArrayList(u8)) !void {
     var h: [4]u8 = undefined;
     serializeInteger(u32, @intCast(bytes.len), &h);
     try buf.appendSlice(h[0..4]);
     try buf.appendSlice(bytes);
 }
 
-pub fn deserializeBytes(bytes: []const u8, buf: *[]const u8) usize {
+fn deserializeBytes(bytes: []const u8, buf: *[]const u8) usize {
     const length = deserializeInteger(u32, bytes);
     const offset = length + 4;
     buf.* = bytes[4..offset];
     return offset;
 }
 
+pub fn recover_from_wal(self: *Self) !void {
+    const replyer = struct {
+        pub fn reply(log: ?*const anyopaque, size: usize, mm_ptr: ?*anyopaque) callconv(.C) usize {
+            var content: []const u8 = undefined;
+            content.ptr = @ptrCast(log.?);
+            const data = content[0..size];
+            var offset: usize = 0;
+            while (offset < size) {
+                var kbuf: []const u8 = undefined;
+                var vbuf: []const u8 = undefined;
+                offset += deserializeBytes(data[offset..], &kbuf);
+                offset += deserializeBytes(data[offset..], &vbuf);
+
+                var mm: *Self = @ptrCast(@alignCast(mm_ptr.?));
+
+                const kk = mm.allocator.dupe(u8, kbuf) catch |err| {
+                    std.log.err("failed to dup key: {s}", .{@errorName(err)});
+                    @panic("failed to dup key");
+                };
+                errdefer mm.allocator.free(kk);
+                const vv = mm.allocator.dupe(u8, vbuf) catch |err| {
+                    std.log.err("failed to dup value: {s}", .{@errorName(err)});
+                    @panic("failed to dup value");
+                };
+                errdefer mm.allocator.free(vv);
+                if (mm.lock.tryLock()) {
+                    defer mm.lock.unlock();
+                    mm.map.insert(kk, vv) catch |err| {
+                        std.log.err("failed to insert: {s}", .{@errorName(err)});
+                        @panic("failed to insert");
+                    };
+                }
+                mm.gabbage.append(kk) catch |err| {
+                    std.log.err("failed to append: {s}", .{@errorName(err)});
+                    @panic("failed to append");
+                };
+                mm.gabbage.append(vv) catch |err| {
+                    std.log.err("failed to append: {s}", .{@errorName(err)});
+                    @panic("failed to append");
+                };
+            }
+            return 0;
+        }
+    };
+
+    try self.wal.replay(0, -1, replyer.reply, @ptrCast(self));
+}
+
 pub fn put(self: Self, key: []const u8, value: []const u8) !void {
-    var id: [4]u8 = undefined;
-    serializeInteger(u32, @intCast(self.id), &id);
+    // [key-size: 4bytes][key][value-size: 4bytes][value]
     var buf = std.ArrayList(u8).init(self.allocator);
     defer buf.deinit();
-    try buf.appendSlice(id[0..4]);
-
     try serializeBytes(key, &buf);
     try serializeBytes(value, &buf);
     try self.wal.append(buf.items);
@@ -105,9 +157,13 @@ pub fn put(self: Self, key: []const u8, value: []const u8) !void {
     errdefer self.allocator.free(kk);
     const vv = try self.allocator.dupe(u8, value);
     errdefer self.allocator.free(vv);
-    try self.map.insert(kk, vv);
+    if (self.lock.tryLock()) {
+        defer self.lock.unlock();
+        try self.map.insert(kk, vv);
+    }
     try self.gabbage.append(kk);
     try self.gabbage.append(vv);
+    self.may_gc();
 }
 
 fn may_gc(self: Self) void {
@@ -120,11 +176,14 @@ fn may_gc(self: Self) void {
 }
 
 pub fn get(self: Self, key: []const u8, val: *[]const u8) !void {
-    const v = self.map.get(key);
-    if (v) |vv| {
-        val.* = vv;
-    } else {
-        return MemtableError.NotFound;
+    if (self.lock.tryLockShared()) {
+        defer self.lock.unlockShared();
+        const v = self.map.get(key);
+        if (v) |vv| {
+            val.* = vv;
+        } else {
+            return MemtableError.NotFound;
+        }
     }
 }
 
@@ -138,9 +197,31 @@ pub fn is_empty(self: Self) bool {
 
 test "put/get" {
     const allocator = std.testing.allocator;
+    defer std.fs.cwd().deleteTree("./tmp/test.mm") catch unreachable;
     var mm = try Self.init(0, allocator, "./tmp/test.mm");
     defer mm.deinit();
     try mm.put("foo", "bar");
+    var val: []const u8 = undefined;
+    try mm.get("foo", &val);
+    try std.testing.expectEqualStrings("bar", val);
+}
+
+test "recover" {
+    const allocator = std.testing.allocator;
+    defer std.fs.cwd().deleteTree("./tmp/recover.mm") catch unreachable;
+    var mm = try Self.init(0, allocator, "./tmp/recover.mm");
+    try mm.put("foo", "bar");
+    try mm.put("foo1", "bar1");
+    try mm.put("foo2", "bar2");
+    try mm.sync_wal();
+
+    mm.deinit();
+
+    // reopen
+    mm = try Self.init(0, allocator, "./tmp/recover.mm");
+    defer mm.deinit();
+    try mm.recover_from_wal();
+
     var val: []const u8 = undefined;
     try mm.get("foo", &val);
     try std.testing.expectEqualStrings("bar", val);
