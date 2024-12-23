@@ -5,9 +5,6 @@ const Wal = @import("Wal.zig");
 const RwLock = std.Thread.RwLock;
 
 const Self = @This();
-const MemtableError = error{
-    NotFound,
-};
 const Map = skiplist.SkipList([]const u8, []const u8);
 const GC = std.ArrayList([]const u8);
 const MemTableIterator = struct {
@@ -180,16 +177,17 @@ pub fn put(self: *Self, key: []const u8, value: []const u8) !void {
     try self.put_to_list(key, value);
 }
 
-pub fn get(self: *Self, key: []const u8, val: *[]const u8) !void {
+pub fn get(self: *Self, key: []const u8, val: *[]const u8) bool {
     if (self.lock.tryLockShared()) {
         defer self.lock.unlockShared();
         const v = self.map.get(key);
         if (v) |vv| {
             val.* = vv;
-        } else {
-            return MemtableError.NotFound;
+            return true;
         }
+        return false;
     }
+    return false;
 }
 
 pub fn sync_wal(self: Self) !void {
@@ -218,8 +216,11 @@ test "put/get" {
     defer mm.deinit();
     try mm.put("foo", "bar");
     var val: []const u8 = undefined;
-    try mm.get("foo", &val);
-    try std.testing.expectEqualStrings("bar", val);
+    if (mm.get("foo", &val)) {
+        try std.testing.expectEqualStrings("bar", val);
+    } else {
+        unreachable;
+    }
 }
 
 test "recover" {
@@ -239,8 +240,11 @@ test "recover" {
     try mm.recover_from_wal();
 
     var val: []const u8 = undefined;
-    try mm.get("foo", &val);
-    try std.testing.expectEqualStrings("bar", val);
+    if (mm.get("foo", &val)) {
+        try std.testing.expectEqualStrings("bar", val);
+    } else {
+        unreachable;
+    }
 }
 
 test "iter" {

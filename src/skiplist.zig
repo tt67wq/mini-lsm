@@ -153,7 +153,7 @@ pub fn SkipList(comptime Tk: type, comptime Tv: type) type {
             }
         }
 
-        pub fn get(self: *Self, key: Tk) ?Tv {
+        pub fn get(self: Self, key: Tk) ?Tv {
             const head = self.head orelse return null;
             if (self.eq(key, head.key)) return head.value;
             if (self.lt(key, head.key)) return null;
