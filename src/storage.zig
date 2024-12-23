@@ -53,7 +53,7 @@ pub const StorageInner = struct {
         var state = StorageState.init(allocator, options);
 
         // manifest
-        const manifest_path = std.fs.path.join(allocator, &[_][]const u8{
+        const manifest_path = std.fs.path.joinZ(allocator, &[_][]const u8{
             path,
             "MANIFEST",
         }) catch unreachable;
