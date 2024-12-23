@@ -16,7 +16,7 @@ wal: *swal.swal_t = undefined,
 pub fn init(directory: []const u8) !Self {
     // prepare directory
     std.fs.cwd().makePath(directory) catch |err| {
-        std.log.err("Failed to make path: {any}", .{err});
+        std.log.err("Failed to make path {s}: {any}", .{ directory, err });
         return WalError.WalOpenFailed;
     };
 
@@ -25,7 +25,7 @@ pub fn init(directory: []const u8) !Self {
 
     const ret = swal.swal_open(@ptrCast(directory), options, &wal);
     if (ret != 0) {
-        std.log.err("Failed to open wal: {d}", .{ret});
+        std.log.err("Failed to open wal {s}: {d}", .{ directory, ret });
         return WalError.WalOpenFailed;
     }
     return Self{
