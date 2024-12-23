@@ -158,8 +158,8 @@ fn put_to_list(self: *Self, key: []const u8, value: []const u8) !void {
         defer self.lock.unlock();
         try self.map.insert(kk, vv);
     }
-    try self.gabbage.append(kk);
-    try self.gabbage.append(vv);
+    try self.gabbage.append(kk[0..key.len]);
+    try self.gabbage.append(vv[0..value.len]);
 
     _ = self.approximate_size.fetchAdd(@intCast(key.len + value.len), .monotonic);
 }
