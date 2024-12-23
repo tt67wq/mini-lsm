@@ -180,8 +180,8 @@ pub fn put(self: *Self, key: []const u8, value: []const u8) !void {
 pub fn get(self: *Self, key: []const u8, val: *[]const u8) bool {
     if (self.lock.tryLockShared()) {
         defer self.lock.unlockShared();
-        const v = self.map.get(key);
-        if (v) |vv| {
+        var vv: []const u8 = undefined;
+        if (self.map.get(key, &vv)) {
             val.* = vv;
             return true;
         }

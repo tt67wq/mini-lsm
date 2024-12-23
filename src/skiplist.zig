@@ -153,16 +153,22 @@ pub fn SkipList(comptime Tk: type, comptime Tv: type) type {
             }
         }
 
-        pub fn get(self: Self, key: Tk) ?Tv {
-            const head = self.head orelse return null;
-            if (self.eq(key, head.key)) return head.value;
-            if (self.lt(key, head.key)) return null;
+        pub fn get(self: Self, key: Tk, value: *Tv) bool {
+            const head = self.head orelse return false;
+            if (self.eq(key, head.key)) {
+                if (head.value) |v| value.* = v;
+                return true;
+            }
+            if (self.lt(key, head.key)) return false;
 
             const levels = self.allocator.alloc(*Node, self.levels) catch unreachable;
             defer self.allocator.free(levels);
             const node = self.descend(key, levels);
-            if (self.eq(key, node.key)) return node.value;
-            return null;
+            if (self.eq(key, node.key)) {
+                if (node.value) |v| value.* = v;
+                return true;
+            }
+            return false;
         }
 
         pub fn insert(self: *Self, k: Tk, v: ?Tv) !void {
@@ -313,7 +319,10 @@ test "skip list u8" {
 
     // list.display();
 
-    _ = list.get(2).?;
+    var val: u32 = 0;
+    if (!list.get(2, &val)) {
+        unreachable;
+    }
 
     var iter = list.iter(16, 32);
     while (iter.hasNext()) {
