@@ -151,7 +151,7 @@ fn put_to_list(self: *Self, key: []const u8, value: []const u8) !void {
     errdefer self.allocator.free(kk);
     const vv = try self.allocator.dupe(u8, value);
     errdefer self.allocator.free(vv);
-    if (self.lock.tryLock()) {
+    if (self.lock.lock()) {
         defer self.lock.unlock();
         try self.map.insert(kk, vv);
     }
@@ -178,7 +178,7 @@ pub fn put(self: *Self, key: []const u8, value: []const u8) !void {
 }
 
 pub fn get(self: *Self, key: []const u8, val: *[]const u8) bool {
-    if (self.lock.tryLockShared()) {
+    if (self.lock.lockShared()) {
         defer self.lock.unlockShared();
         var vv: []const u8 = undefined;
         if (self.map.get(key, &vv)) {
