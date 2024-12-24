@@ -104,12 +104,20 @@ pub const StorageInner = struct {
         self.state_lock.lockShared();
         defer self.state_lock.unlockShared();
         if (self.state.mem_table.get(key, value)) {
+            if (value.*.len == 0) {
+                // tomestone
+                return false;
+            }
             return true;
         }
         // search in imm_memtable
         for (self.state.imm_mem_tables.items) |m| {
             var imm_table = m;
             if (imm_table.get(key, value)) {
+                if (value.*.len == 0) {
+                    // tomestone
+                    return false;
+                }
                 return true;
             }
         }
@@ -130,6 +138,7 @@ pub const StorageInner = struct {
                     };
                 },
                 .delete => |dd| {
+                    // we use "" as the tombstone value
                     self.state.mem_table.put(dd, "") catch |err| {
                         std.log.err("delete failed: {s}", .{@errorName(err)});
                         @panic("delete failed");

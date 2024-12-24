@@ -221,6 +221,7 @@ pub fn SkipList(comptime Tk: type, comptime Tv: type) type {
 
             const prev = self.descend(k, levels);
             if (self.eq(prev.key, k)) {
+                self.allocator.destroy(node);
                 prev.value = v;
                 return;
             }
