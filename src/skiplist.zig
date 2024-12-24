@@ -346,17 +346,17 @@ test "skip list bytes" {
     );
     defer list.deinit();
 
-    for (0..10) |i| {
-        const key = std.fmt.allocPrint(allocator, "key-{d}", .{i}) catch unreachable;
-        const val = std.fmt.allocPrint(allocator, "value-{d}", .{i}) catch unreachable;
+    for (0..120) |i| {
+        const key = std.fmt.allocPrint(allocator, "key{d:0>5}", .{i}) catch unreachable;
+        const val = std.fmt.allocPrint(allocator, "val{d:0>5}", .{i}) catch unreachable;
         std.debug.print("insert {s} => {s}\n", .{ key, val });
         try list.insert(key, val);
     }
 
-    list.display();
-    std.debug.print("--------------------\n", .{});
+    // list.display();
+    // std.debug.print("--------------------\n", .{});
 
-    var iter = list.iter("key", "key-99");
+    var iter = list.iter("key", "key00121");
     var to_free_key: []const u8 = undefined;
     var to_free_val: []const u8 = undefined;
     var first = true;
