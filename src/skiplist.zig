@@ -12,19 +12,13 @@ pub fn SkipList(comptime Tk: type, comptime Tv: type) type {
         };
 
         pub const Iterator = struct {
-            current: Node,
+            current: *Node,
             upper_bound: Tk,
             lt: *const CmpFn,
 
-            pub fn init(current: ?*Node, upper_bound: Tk, lt: *const CmpFn) Iterator {
-                const init_node = Node{
-                    .key = undefined,
-                    .value = undefined,
-                    .next = current,
-                    .down = undefined,
-                };
+            pub fn init(current: *Node, upper_bound: Tk, lt: *const CmpFn) Iterator {
                 return .{
-                    .current = init_node,
+                    .current = current,
                     .upper_bound = upper_bound,
                     .lt = lt,
                 };
@@ -37,18 +31,20 @@ pub fn SkipList(comptime Tk: type, comptime Tv: type) type {
                 return false;
             }
 
-            pub fn next(self: *Iterator) ?struct {
-                key: Tk,
-                value: ?Tv,
-            } {
+            pub fn key(self: *Iterator) Tk {
+                return self.current.key;
+            }
+
+            pub fn value(self: *Iterator) ?Tv {
+                return self.current.value;
+            }
+
+            pub fn next(self: *Iterator) void {
                 if (self.current.next) |n| {
-                    self.current = n.*;
-                    return .{
-                        .key = n.key,
-                        .value = n.value,
-                    };
+                    self.current = n;
+                    return;
                 }
-                return null;
+                unreachable;
             }
         };
 
@@ -276,9 +272,6 @@ pub fn SkipList(comptime Tk: type, comptime Tv: type) type {
             const levels = self.allocator.alloc(*Node, self.levels) catch unreachable;
             defer self.allocator.free(levels);
             const node = self.descend(lower_bound, levels);
-            if (self.lt(node.key, lower_bound)) {
-                return Iterator.init(null, upper_bound, self.lt);
-            }
             return Iterator.init(node, upper_bound, self.lt);
         }
 
@@ -307,7 +300,7 @@ fn testEqualBytes(a: []const u8, b: []const u8) bool {
     return std.mem.eql(u8, a, b);
 }
 
-test "skip list u8" {
+test "skiplist u8" {
     const allocator = std.testing.allocator;
     var rng = std.rand.DefaultPrng.init(0);
     var list = SkipList(u32, u32).init(allocator, rng.random(), testComp, testEqual);
@@ -326,16 +319,17 @@ test "skip list u8" {
     }
 
     var iter = list.iter(16, 32);
-    while (iter.hasNext()) {
-        const m = iter.next().?;
-        std.debug.print("k={d} v={d}\n", .{ m.key, m.value.? });
+    while (true) {
+        std.debug.print("k={d} v={d}\n", .{ iter.key(), iter.value().? });
+        if (!iter.hasNext()) break;
+        iter.next();
     }
 
     iter = list.iter(65, 100);
     try std.testing.expect(!iter.hasNext());
 }
 
-test "skip list bytes" {
+test "skiplist bytes" {
     const allocator = std.testing.allocator;
     var rng = std.rand.DefaultPrng.init(0);
     var list = SkipList([]const u8, []const u8).init(
@@ -360,16 +354,17 @@ test "skip list bytes" {
     var to_free_key: []const u8 = undefined;
     var to_free_val: []const u8 = undefined;
     var first = true;
-    while (iter.hasNext()) {
-        const m = iter.next().?;
-        std.debug.print("k={s} v={s}\n", .{ m.key, m.value.? });
+    while (true) {
+        std.debug.print("k={s} v={s}\n", .{ iter.key(), iter.value().? });
         if (!first) {
             allocator.free(to_free_key);
             allocator.free(to_free_val);
         }
-        to_free_key = m.key;
-        to_free_val = m.value.?;
+        to_free_key = iter.key();
+        to_free_val = iter.value().?;
         first = false;
+        if (!iter.hasNext()) break;
+        iter.next();
     }
     if (!first) {
         allocator.free(to_free_key);
