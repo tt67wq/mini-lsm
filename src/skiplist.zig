@@ -12,11 +12,20 @@ pub fn SkipList(comptime Tk: type, comptime Tv: type) type {
         };
 
         pub const Iterator = struct {
-            current: *Node,
+            current: ?*Node,
             upper_bound: Tk,
             lt: *const CmpFn,
 
-            pub fn init(current: *Node, upper_bound: Tk, lt: *const CmpFn) Iterator {
+            pub fn init(current: ?*Node, upper_bound: Tk, lt: *const CmpFn) Iterator {
+                if (current) |c| {
+                    if (!lt(c.key, upper_bound)) {
+                        return .{
+                            .current = null,
+                            .upper_bound = upper_bound,
+                            .lt = lt,
+                        };
+                    }
+                }
                 return .{
                     .current = current,
                     .upper_bound = upper_bound,
@@ -24,27 +33,28 @@ pub fn SkipList(comptime Tk: type, comptime Tv: type) type {
                 };
             }
 
-            pub fn hasNext(self: Iterator) bool {
-                if (self.current.next) |n| {
-                    return self.lt(n.key, self.upper_bound);
+            pub fn is_empty(self: Iterator) bool {
+                if (self.current) |_| {
+                    return false;
                 }
-                return false;
+                return true;
             }
 
             pub fn key(self: Iterator) Tk {
-                return self.current.key;
+                return self.current.?.key;
             }
 
             pub fn value(self: Iterator) ?Tv {
-                return self.current.value;
+                return self.current.?.value;
             }
 
             pub fn next(self: *Iterator) void {
-                if (self.current.next) |n| {
-                    self.current = n;
-                    return;
+                self.current = self.current.?.next;
+                if (self.current) |c| {
+                    if (!self.lt(c.key, self.upper_bound)) {
+                        self.current = null;
+                    }
                 }
-                unreachable;
             }
         };
 
@@ -269,9 +279,14 @@ pub fn SkipList(comptime Tk: type, comptime Tv: type) type {
 
         // Returns an iterator over the range `[lower_bound, upper_bound)`.
         pub fn iter(self: Self, lower_bound: Tk, upper_bound: Tk) Iterator {
+            if (self.lt(upper_bound, lower_bound)) @panic("invalid range");
+            if (self.is_empty()) {
+                return Iterator.init(null, upper_bound, self.lt);
+            }
             const levels = self.allocator.alloc(*Node, self.levels) catch unreachable;
             defer self.allocator.free(levels);
             const node = self.descend(lower_bound, levels);
+            if (self.lt(node.key, lower_bound)) return Iterator.init(null, upper_bound, self.lt);
             return Iterator.init(node, upper_bound, self.lt);
         }
 
@@ -300,7 +315,7 @@ fn testEqualBytes(a: []const u8, b: []const u8) bool {
     return std.mem.eql(u8, a, b);
 }
 
-test "skiplist u8" {
+test "u8" {
     const allocator = std.testing.allocator;
     var rng = std.rand.DefaultPrng.init(0);
     var list = SkipList(u32, u32).init(allocator, rng.random(), testComp, testEqual);
@@ -319,17 +334,13 @@ test "skiplist u8" {
     }
 
     var iter = list.iter(16, 32);
-    while (true) {
+    while (!iter.is_empty()) {
         std.debug.print("k={d} v={d}\n", .{ iter.key(), iter.value().? });
-        if (!iter.hasNext()) break;
         iter.next();
     }
-
-    iter = list.iter(65, 100);
-    try std.testing.expect(!iter.hasNext());
 }
 
-test "skiplist bytes" {
+test "bytes" {
     const allocator = std.testing.allocator;
     var rng = std.rand.DefaultPrng.init(0);
     var list = SkipList([]const u8, []const u8).init(
@@ -354,7 +365,7 @@ test "skiplist bytes" {
     var to_free_key: []const u8 = undefined;
     var to_free_val: []const u8 = undefined;
     var first = true;
-    while (true) {
+    while (!iter.is_empty()) {
         std.debug.print("k={s} v={s}\n", .{ iter.key(), iter.value().? });
         if (!first) {
             allocator.free(to_free_key);
@@ -363,7 +374,6 @@ test "skiplist bytes" {
         to_free_key = iter.key();
         to_free_val = iter.value().?;
         first = false;
-        if (!iter.hasNext()) break;
         iter.next();
     }
     if (!first) {
@@ -372,4 +382,26 @@ test "skiplist bytes" {
     }
 
     std.debug.print("--------------------\n", .{});
+}
+
+test "iterator" {
+    const allocator = std.testing.allocator;
+    var rng = std.rand.DefaultPrng.init(0);
+    var list = SkipList(u32, u32).init(allocator, rng.random(), testComp, testEqual);
+    defer list.deinit();
+    for (10..20) |i| {
+        try list.insert(@intCast(i), @intCast(i * 2));
+    }
+
+    const it1 = list.iter(21, 40);
+    try std.testing.expect(it1.is_empty());
+
+    const it2 = list.iter(5, 10);
+    try std.testing.expect(it2.is_empty());
+
+    var it3 = list.iter(10, 15);
+    while (!it3.is_empty()) {
+        std.debug.print("k={d} v={d}\n", .{ it3.key(), it3.value().? });
+        it3.next();
+    }
 }
