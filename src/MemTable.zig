@@ -20,12 +20,16 @@ const MemTableIterator = struct {
         return self.iter.hasNext();
     }
 
-    pub fn next(self: *MemTableIterator, key: *[]const u8, value: *[]const u8) void {
-        const p = self.iter.next().?;
-        key.* = p.key;
-        if (p.value) |v| {
-            value.* = v;
-        }
+    pub fn next(self: *MemTableIterator) void {
+        self.iter.next();
+    }
+
+    pub fn key(self: *MemTableIterator, kp: *[]const u8) void {
+        kp.* = self.iter.key();
+    }
+
+    pub fn value(self: *MemTableIterator, vp: *[]const u8) void {
+        vp.* = self.iter.value().?;
     }
 };
 
@@ -259,8 +263,11 @@ test "iter" {
     var it = mm.iter("foo", max_key);
     var key: []const u8 = undefined;
     var val: []const u8 = undefined;
-    while (it.hasNext()) {
-        it.next(&key, &val);
+    while (true) {
+        it.key(&key);
+        it.value(&val);
         std.debug.print("key: {s}, val: {s}\n", .{ key, val });
+        if (!it.hasNext()) break;
+        it.next();
     }
 }
