@@ -33,7 +33,7 @@ pub fn SkipList(comptime Tk: type, comptime Tv: type) type {
                 };
             }
 
-            pub fn is_empty(self: Iterator) bool {
+            pub fn isEmpty(self: Iterator) bool {
                 if (self.current) |_| {
                     return false;
                 }
@@ -280,7 +280,7 @@ pub fn SkipList(comptime Tk: type, comptime Tv: type) type {
         // Returns an iterator over the range `[lower_bound, upper_bound)`.
         pub fn iter(self: Self, lower_bound: Tk, upper_bound: Tk) Iterator {
             if (self.lt(upper_bound, lower_bound)) @panic("invalid range");
-            if (self.is_empty()) {
+            if (self.isEmpty()) {
                 return Iterator.init(null, upper_bound, self.lt);
             }
             const levels = self.allocator.alloc(*Node, self.levels) catch unreachable;
@@ -290,7 +290,7 @@ pub fn SkipList(comptime Tk: type, comptime Tv: type) type {
             return Iterator.init(node, upper_bound, self.lt);
         }
 
-        pub fn is_empty(self: Self) bool {
+        pub fn isEmpty(self: Self) bool {
             if (self.head) |_| {
                 return false;
             }
@@ -334,7 +334,7 @@ test "u8" {
     }
 
     var iter = list.iter(16, 32);
-    while (!iter.is_empty()) {
+    while (!iter.isEmpty()) {
         std.debug.print("k={d} v={d}\n", .{ iter.key(), iter.value().? });
         iter.next();
     }
@@ -365,7 +365,7 @@ test "bytes" {
     var to_free_key: []const u8 = undefined;
     var to_free_val: []const u8 = undefined;
     var first = true;
-    while (!iter.is_empty()) {
+    while (!iter.isEmpty()) {
         std.debug.print("k={s} v={s}\n", .{ iter.key(), iter.value().? });
         if (!first) {
             allocator.free(to_free_key);
@@ -394,13 +394,13 @@ test "iterator" {
     }
 
     const it1 = list.iter(21, 40);
-    try std.testing.expect(it1.is_empty());
+    try std.testing.expect(it1.isEmpty());
 
     const it2 = list.iter(5, 10);
-    try std.testing.expect(it2.is_empty());
+    try std.testing.expect(it2.isEmpty());
 
     var it3 = list.iter(10, 15);
-    while (!it3.is_empty()) {
+    while (!it3.isEmpty()) {
         std.debug.print("k={d} v={d}\n", .{ it3.key(), it3.value().? });
         it3.next();
     }
