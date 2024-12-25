@@ -16,8 +16,8 @@ const MemTableIterator = struct {
         };
     }
 
-    pub fn hasNext(self: MemTableIterator) bool {
-        return self.iter.hasNext();
+    pub fn isEmpty(self: MemTableIterator) bool {
+        return self.iter.isEmpty();
     }
 
     pub fn next(self: *MemTableIterator) void {
@@ -256,14 +256,22 @@ test "iter" {
     defer std.fs.cwd().deleteTree("./tmp/iter.mm") catch unreachable;
     var mm = Self.init(0, allocator, "./tmp/iter.mm");
     defer mm.deinit();
-    try mm.put("foo", "bar");
-    try mm.put("foo1", "bar1");
-    try mm.put("foo2", "bar2");
+    try mm.put("a", "a");
+    try mm.put("b", "b");
+    try mm.put("c", "c");
+    try mm.put("d", "d");
+    try mm.put("e", "e");
 
-    var it = mm.iter("foo", max_key);
-    while (true) {
+    var it = mm.iter("a", "c");
+    while (!it.isEmpty()) {
         std.debug.print("key: {s}, val: {s}\n", .{ it.key(), it.value().? });
-        if (!it.hasNext()) break;
         it.next();
+    }
+
+    std.debug.print("===========\n", .{});
+    var it3 = mm.iter("", max_key);
+    while (!it3.isEmpty()) {
+        std.debug.print("key: {s}, val: {s}\n", .{ it3.key(), it3.value().? });
+        it3.next();
     }
 }
