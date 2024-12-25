@@ -31,11 +31,11 @@ pub fn SkipList(comptime Tk: type, comptime Tv: type) type {
                 return false;
             }
 
-            pub fn key(self: *Iterator) Tk {
+            pub fn key(self: Iterator) Tk {
                 return self.current.key;
             }
 
-            pub fn value(self: *Iterator) ?Tv {
+            pub fn value(self: Iterator) ?Tv {
                 return self.current.value;
             }
 
