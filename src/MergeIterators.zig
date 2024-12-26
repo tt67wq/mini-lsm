@@ -41,10 +41,7 @@ const Comparer = struct {
     }
 
     fn cmpId(a: usize, b: usize) std.math.Order {
-        // if (a < b) return .lt;
-        // if (a > b) return .gt;
-        // return .eq;
-        return std.math.order(a, b);
+        return std.math.order(b, a);
     }
 
     pub fn cmp(_: Context, a: *HeapWrapper, b: *HeapWrapper) std.math.Order {
@@ -72,6 +69,7 @@ pub fn init(allocator: std.mem.Allocator, iters: std.ArrayList(StorageIterator))
         };
     }
 
+    // PS: the last iter has the highest priority
     for (iters.items, 0..) |iter, i| {
         if (!iter.isEmpty()) {
             const hw = allocator.create(HeapWrapper) catch unreachable;
@@ -148,13 +146,8 @@ pub fn next(self: *Self) void {
         return;
     }
 
-    if (self.q.peek()) |ii| {
-        if (cc.lessThan(ii)) {
-            _ = self.q.remove();
-            self.current = ii;
-            self.q.add(cc) catch unreachable;
-        }
-    }
+    self.q.add(cc) catch unreachable;
+    self.current = self.q.removeOrNull();
 }
 
 test "merge_iterator" {
@@ -184,9 +177,9 @@ test "merge_iterator" {
     try iters.append(StorageIterator{ .mem_iter = m2.iter("a", "z") });
     try iters.append(StorageIterator{ .mem_iter = m3.iter("a", "z") });
 
-    // iter1: b->del, c->4, d->5
-    // iter2: a->1, b->2, c->3
-    // iter3: e->4
+    // 2 iter1: b->del, c->4, d->5
+    // 1 iter2: a->1, b->2, c->3
+    // 0 iter3: e->4
 
     var mit = Self.init(allocator, iters);
     defer mit.deinit();
