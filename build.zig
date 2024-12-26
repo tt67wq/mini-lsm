@@ -19,20 +19,6 @@ pub fn build(b: *std.Build) void {
     // set a preferred release mode, allowing the user to decide how to optimize.
     const optimize = b.standardOptimizeOption(.{});
 
-    const lib = b.addStaticLibrary(.{
-        .name = "mini-lsm",
-        // In this case the main source file is merely a path, however, in more
-        // complicated build scripts, this could be a generated file.
-        .root_source_file = b.path("src/root.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-
-    // This declares intent for the library to be installed into the standard
-    // location when the user invokes the "install" step (the default step when
-    // running `zig build`).
-    b.installArtifact(lib);
-
     const exe = b.addExecutable(.{
         .name = "mini-lsm",
         .root_source_file = b.path("src/main.zig"),
@@ -98,6 +84,19 @@ pub fn build(b: *std.Build) void {
     });
 
     const run_storage_unit_tests = b.addRunArtifact(storage_unit_tests);
+
+    // const iterator_unit_tests = b.addTest(.{
+    //     .root_source_file = b.path("src/iterators/MergeIterators.zig"),
+    //     .target = target,
+    //     .optimize = optimize,
+    // });
+    // iterator_unit_tests.linkLibC();
+    // iterator_unit_tests.addIncludePath(LazyPath{ .cwd_relative = "./include" });
+    // iterator_unit_tests.addCSourceFiles(.{
+    //     .files = &c_source_files,
+    //     .flags = &c_flags,
+    // });
+    // const run_iterator_unit_tests = b.addRunArtifact(iterator_unit_tests);
 
     // Similar to creating the run step earlier, this exposes a `test` step to
     // the `zig build --help` menu, providing a way for the user to request

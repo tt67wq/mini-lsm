@@ -7,7 +7,7 @@ const RwLock = std.Thread.RwLock;
 const Self = @This();
 const Map = skiplist.SkipList([]const u8, []const u8);
 const GC = std.ArrayList([]const u8);
-const MemTableIterator = struct {
+pub const MemTableIterator = struct {
     iter: Map.Iterator,
 
     pub fn init(m: Map.Iterator) MemTableIterator {
@@ -24,11 +24,11 @@ const MemTableIterator = struct {
         self.iter.next();
     }
 
-    pub fn key(self: *MemTableIterator) []const u8 {
+    pub fn key(self: MemTableIterator) []const u8 {
         return self.iter.key();
     }
 
-    pub fn value(self: *MemTableIterator) ?[]const u8 {
+    pub fn value(self: MemTableIterator) ?[]const u8 {
         return self.iter.value();
     }
 };
