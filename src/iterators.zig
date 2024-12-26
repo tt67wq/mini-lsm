@@ -1,22 +1,21 @@
-const MemTable = @import("root").MemTable;
+const std = @import("std");
+const MemTable = @import("MemTable.zig");
 const MemTableIterator = MemTable.MemTableIterator;
 
 pub const StorageIterator = union(enum) {
     mem_iter: MemTableIterator,
 
-    pub fn hasNext(self: StorageIterator) bool {
+    pub fn isEmpty(self: StorageIterator) bool {
         switch (self) {
             .mem_iter => |iter| {
-                return iter.hasNext();
+                return iter.isEmpty();
             },
         }
     }
 
     pub fn next(self: *StorageIterator) void {
-        switch (self) {
-            .mem_iter => |iter| {
-                iter.next();
-            },
+        switch (self.*) {
+            .mem_iter => self.mem_iter.next(),
         }
     }
 
