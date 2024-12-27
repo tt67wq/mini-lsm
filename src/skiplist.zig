@@ -165,6 +165,25 @@ pub fn SkipList(comptime Tk: type, comptime Tv: type) type {
             }
         }
 
+        fn descendMin(self: Self, levels: []*Node) *Node {
+            if (self.head == null) {
+                @panic("Cannot descend on empty list");
+            }
+            var level = self.levels - 1;
+            var current = self.head.?;
+            while (true) {
+                const down = current.down;
+                if (down) |d| {
+                    levels[level] = current;
+                    level -= 1;
+                    current = d;
+                    continue;
+                } else {
+                    return current;
+                }
+            }
+        }
+
         // Find the biggest node less or equal to `key`.
         fn descend(self: Self, key: Tk, levels: []*Node) *Node {
             if (self.head == null) {
@@ -319,14 +338,14 @@ pub fn SkipList(comptime Tk: type, comptime Tv: type) type {
                 return Iterator.init(null, upper_bound, self.lt, self.eq);
             }
 
-            // iter from head
-            if (lower_bound.isUnbounded()) {
-                return Iterator.init(self.head, upper_bound, self.lt, self.eq);
-            }
-
             const levels = self.allocator.alloc(*Node, self.levels) catch unreachable;
             defer self.allocator.free(levels);
-            const node = self.descend(lower_bound.data, levels);
+            var node: *Node = undefined;
+            if (lower_bound.isUnbounded()) {
+                node = self.descendMin(levels);
+            } else {
+                node = self.descend(lower_bound.data, levels);
+            }
             if (self.eq(node.key, lower_bound.data) and lower_bound.bound_t == .excluded) {
                 return Iterator.init(node.next, upper_bound, self.lt, self.eq);
             }
@@ -486,6 +505,14 @@ test "iterator" {
     std.debug.print("-----------------------------\n", .{});
 
     it = list.scan(List.Bound.init(19, .included), List.Bound.init(20, .included));
+    while (!it.isEmpty()) {
+        std.debug.print("k={d} v={d}\n", .{ it.key(), it.value().? });
+        it.next();
+    }
+
+    std.debug.print("-----------------------------\n", .{});
+
+    it = list.scan(List.Bound.init(19, .unbounded), List.Bound.init(18, .included));
     while (!it.isEmpty()) {
         std.debug.print("k={d} v={d}\n", .{ it.key(), it.value().? });
         it.next();
