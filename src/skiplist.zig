@@ -41,17 +41,14 @@ pub fn SkipList(comptime Tk: type, comptime Tv: type) type {
             }
 
             pub fn key(self: Iterator) Tk {
-                std.debug.assert(!self.isEmpty());
                 return self.current.?.key;
             }
 
             pub fn value(self: Iterator) ?Tv {
-                std.debug.assert(!self.isEmpty());
                 return self.current.?.value;
             }
 
             pub fn next(self: *Iterator) void {
-                std.debug.assert(!self.isEmpty());
                 self.current = self.current.?.next;
                 if (self.current) |c| {
                     if (!self.lt(c.key, self.upper_bound)) {
