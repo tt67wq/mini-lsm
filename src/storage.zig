@@ -1,6 +1,13 @@
 const std = @import("std");
 const MemTable = @import("memtable.zig");
+const lsm_iterators = @import("lsm_iterators.zig");
+const iterators = @import("iterators.zig");
+const MergeIterators = @import("MergeIterators.zig");
 const atomic = std.atomic;
+const Bound = MemTable.Bound;
+const MemTableIterator = MemTable.MemTableIterator;
+const StorageIterator = iterators.StorageIterator;
+const LsmIterator = lsm_iterators.LsmIterator;
 
 pub const StorageOptions = struct {
     block_size: usize,
@@ -226,6 +233,27 @@ pub const StorageInner = struct {
             try self.state.imm_mem_tables.append(old_mm);
         }
         try old_mm.sync_wal();
+    }
+
+    fn scan(self: *Self, lower: Bound, upper: Bound) !LsmIterator {
+        var memtable_iters = std.ArrayList(StorageIterator).init(self.allocator);
+        defer memtable_iters.deinit();
+        self.state_lock.lockShared();
+        errdefer self.state_lock.unlockShared();
+        for (self.state.imm_mem_tables.items) |imm_table| {
+            try memtable_iters.append(
+                .{ .mem_iter = imm_table.scan(lower, upper) },
+            );
+        }
+        try memtable_iters.append(
+            .{ .mem_iter = self.state.get_mem_table().scan(lower, upper) },
+        );
+        self.state_lock.unlockShared();
+
+        const mi = MergeIterators.init(self.allocator, memtable_iters.items);
+        errdefer mi.deinit();
+
+        return LsmIterator.init(self.allocator, mi, upper);
     }
 };
 

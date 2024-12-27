@@ -1,16 +1,8 @@
 const std = @import("std");
 const MergeIterators = @import("MergeIterators.zig");
+const Bound = @import("MemTable.zig").Bound;
 
 const LsmIteratorInner = MergeIterators;
-
-pub const Bound = struct {
-    bound: []const u8,
-    bound_type: enum {
-        unbounded,
-        included,
-        excluded,
-    },
-};
 
 pub const LsmIterator = struct {
     allocator: std.mem.Allocator,
@@ -53,15 +45,15 @@ pub const LsmIterator = struct {
             self.is_empty = true;
             return;
         }
-        switch (self.end_bound.bound_type) {
+        switch (self.end_bound.bound_t) {
             .unbounded => return,
             .included => {
-                self.is_empty = std.mem.lessThan(u8, self.key(), self.end_bound.bound) or
-                    std.mem.eql(u8, self.key(), self.end_bound.bound);
+                self.is_empty = std.mem.lessThan(u8, self.key(), self.end_bound.data) or
+                    std.mem.eql(u8, self.key(), self.end_bound.data);
                 return;
             },
             .excluded => {
-                self.is_empty = std.mem.lessThan(u8, self.key(), self.end_bound.bound);
+                self.is_empty = std.mem.lessThan(u8, self.key(), self.end_bound.data);
                 return;
             },
         }
