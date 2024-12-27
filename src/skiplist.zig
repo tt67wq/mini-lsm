@@ -517,4 +517,12 @@ test "iterator" {
         std.debug.print("k={d} v={d}\n", .{ it.key(), it.value().? });
         it.next();
     }
+
+    std.debug.print("-----------------------------\n", .{});
+
+    it = list.scan(List.Bound.init(19, .unbounded), List.Bound.init(18, .unbounded));
+    while (!it.isEmpty()) {
+        std.debug.print("k={d} v={d}\n", .{ it.key(), it.value().? });
+        it.next();
+    }
 }
