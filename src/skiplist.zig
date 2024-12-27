@@ -1,5 +1,5 @@
 const std = @import("std");
-const SkipListError = error{};
+const bound = @import("bound.zig");
 
 pub fn SkipList(comptime Tk: type, comptime Tv: type) type {
     return struct {
@@ -10,26 +10,52 @@ pub fn SkipList(comptime Tk: type, comptime Tv: type) type {
             next: ?*Node,
             down: ?*Node,
         };
+        pub const Bound = bound.Bound(Tk);
 
         pub const Iterator = struct {
             current: ?*Node,
-            upper_bound: Tk,
+            upper_bound: Bound,
             lt: *const CmpFn,
+            eq: *const CmpFn,
 
-            pub fn init(current: ?*Node, upper_bound: Tk, lt: *const CmpFn) Iterator {
+            pub fn init(current: ?*Node, upper_bound: Bound, lt: *const CmpFn, eq: *const CmpFn) Iterator {
                 if (current) |c| {
-                    if (!lt(c.key, upper_bound)) {
-                        return .{
-                            .current = null,
-                            .upper_bound = upper_bound,
-                            .lt = lt,
-                        };
+                    switch (upper_bound.bound_t) {
+                        .unbounded => {
+                            return .{
+                                .current = current,
+                                .upper_bound = upper_bound,
+                                .lt = lt,
+                                .eq = eq,
+                            };
+                        },
+                        .excluded => {
+                            if (lt(c.key, upper_bound.data)) {
+                                return .{
+                                    .current = current,
+                                    .upper_bound = upper_bound,
+                                    .lt = lt,
+                                    .eq = eq,
+                                };
+                            }
+                        },
+                        .included => {
+                            if (lt(c.key, upper_bound.data) or eq(c.key, upper_bound.data)) {
+                                return .{
+                                    .current = current,
+                                    .upper_bound = upper_bound,
+                                    .lt = lt,
+                                    .eq = eq,
+                                };
+                            }
+                        },
                     }
                 }
                 return .{
-                    .current = current,
+                    .current = null,
                     .upper_bound = upper_bound,
                     .lt = lt,
+                    .eq = eq,
                 };
             }
 
@@ -51,8 +77,18 @@ pub fn SkipList(comptime Tk: type, comptime Tv: type) type {
             pub fn next(self: *Iterator) void {
                 self.current = self.current.?.next;
                 if (self.current) |c| {
-                    if (!self.lt(c.key, self.upper_bound)) {
-                        self.current = null;
+                    switch (self.upper_bound.bound_t) {
+                        .unbounded => {},
+                        .excluded => {
+                            if (!self.lt(c.key, self.upper_bound.data)) {
+                                self.current = null;
+                            }
+                        },
+                        .included => {
+                            if (!self.lt(c.key, self.upper_bound.data) and !self.eq(c.key, self.upper_bound.data)) {
+                                self.current = null;
+                            }
+                        },
                     }
                 }
             }
@@ -129,7 +165,6 @@ pub fn SkipList(comptime Tk: type, comptime Tv: type) type {
             }
         }
 
-        //  Descends to the node before `key` if it exists, or to the node before where `v` should be inserted.
         // Find the biggest node less or equal to `key`.
         fn descend(self: Self, key: Tk, levels: []*Node) *Node {
             if (self.head == null) {
@@ -277,17 +312,25 @@ pub fn SkipList(comptime Tk: type, comptime Tv: type) type {
             }
         }
 
-        // Returns an iterator over the range `[lower_bound, upper_bound)`.
-        pub fn iter(self: Self, lower_bound: Tk, upper_bound: Tk) Iterator {
-            if (self.lt(upper_bound, lower_bound)) @panic("invalid range");
+        // Returns an iterator over the range `(lower_bound, upper_bound)`.
+        pub fn scan(self: Self, lower_bound: Bound, upper_bound: Bound) Iterator {
+            if (!lower_bound.isUnbounded() and !upper_bound.isUnbounded() and self.lt(upper_bound.data, lower_bound.data)) @panic("invalid range");
             if (self.isEmpty()) {
-                return Iterator.init(null, upper_bound, self.lt);
+                return Iterator.init(null, upper_bound, self.lt, self.eq);
             }
+
+            // iter from head
+            if (lower_bound.isUnbounded()) {
+                return Iterator.init(self.head, upper_bound, self.lt, self.eq);
+            }
+
             const levels = self.allocator.alloc(*Node, self.levels) catch unreachable;
             defer self.allocator.free(levels);
-            const node = self.descend(lower_bound, levels);
-            if (self.lt(node.key, lower_bound)) return Iterator.init(null, upper_bound, self.lt);
-            return Iterator.init(node, upper_bound, self.lt);
+            const node = self.descend(lower_bound.data, levels);
+            if (self.eq(node.key, lower_bound.data) and lower_bound.bound_t == .excluded) {
+                return Iterator.init(node.next, upper_bound, self.lt, self.eq);
+            }
+            return Iterator.init(node, upper_bound, self.lt, self.eq);
         }
 
         pub fn isEmpty(self: Self) bool {
@@ -387,21 +430,64 @@ test "bytes" {
 test "iterator" {
     const allocator = std.testing.allocator;
     var rng = std.rand.DefaultPrng.init(0);
-    var list = SkipList(u32, u32).init(allocator, rng.random(), testComp, testEqual);
+    const List = SkipList(u32, u32);
+    var list = List.init(allocator, rng.random(), testComp, testEqual);
     defer list.deinit();
     for (10..20) |i| {
-        try list.insert(@intCast(i), @intCast(i * 2));
+        try list.insert(@intCast(i), @intCast(i));
     }
 
-    const it1 = list.iter(21, 40);
-    try std.testing.expect(it1.isEmpty());
+    var it = list.scan(List.Bound.init(10, .included), List.Bound.init(19, .included));
+    while (!it.isEmpty()) {
+        std.debug.print("k={d} v={d}\n", .{ it.key(), it.value().? });
+        it.next();
+    }
 
-    const it2 = list.iter(5, 10);
-    try std.testing.expect(it2.isEmpty());
+    std.debug.print("-----------------------------\n", .{});
 
-    var it3 = list.iter(10, 15);
-    while (!it3.isEmpty()) {
-        std.debug.print("k={d} v={d}\n", .{ it3.key(), it3.value().? });
-        it3.next();
+    it = list.scan(List.Bound.init(10, .excluded), List.Bound.init(19, .included));
+    while (!it.isEmpty()) {
+        std.debug.print("k={d} v={d}\n", .{ it.key(), it.value().? });
+        it.next();
+    }
+
+    std.debug.print("-----------------------------\n", .{});
+
+    it = list.scan(List.Bound.init(10, .excluded), List.Bound.init(19, .excluded));
+    while (!it.isEmpty()) {
+        std.debug.print("k={d} v={d}\n", .{ it.key(), it.value().? });
+        it.next();
+    }
+
+    std.debug.print("-----------------------------\n", .{});
+
+    it = list.scan(List.Bound.init(5, .excluded), List.Bound.init(10, .included));
+    while (!it.isEmpty()) {
+        std.debug.print("k={d} v={d}\n", .{ it.key(), it.value().? });
+        it.next();
+    }
+
+    std.debug.print("-----------------------------\n", .{});
+
+    it = list.scan(List.Bound.init(5, .excluded), List.Bound.init(10, .excluded));
+    while (!it.isEmpty()) {
+        std.debug.print("k={d} v={d}\n", .{ it.key(), it.value().? });
+        it.next();
+    }
+
+    std.debug.print("-----------------------------\n", .{});
+
+    it = list.scan(List.Bound.init(19, .excluded), List.Bound.init(20, .included));
+    while (!it.isEmpty()) {
+        std.debug.print("k={d} v={d}\n", .{ it.key(), it.value().? });
+        it.next();
+    }
+
+    std.debug.print("-----------------------------\n", .{});
+
+    it = list.scan(List.Bound.init(19, .included), List.Bound.init(20, .included));
+    while (!it.isEmpty()) {
+        std.debug.print("k={d} v={d}\n", .{ it.key(), it.value().? });
+        it.next();
     }
 }
