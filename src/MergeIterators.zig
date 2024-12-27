@@ -173,9 +173,12 @@ test "merge_iterator" {
     var iters = std.ArrayList(StorageIterator).init(allocator);
     defer iters.deinit();
 
-    try iters.append(StorageIterator{ .mem_iter = m1.iter("a", "z") });
-    try iters.append(StorageIterator{ .mem_iter = m2.iter("a", "z") });
-    try iters.append(StorageIterator{ .mem_iter = m3.iter("a", "z") });
+    const bound_a = MemTable.Bound.init("a", .included);
+    const bound_z = MemTable.Bound.init("z", .included);
+
+    try iters.append(StorageIterator{ .mem_iter = m1.scan(bound_a, bound_z) });
+    try iters.append(StorageIterator{ .mem_iter = m2.scan(bound_a, bound_z) });
+    try iters.append(StorageIterator{ .mem_iter = m3.scan(bound_a, bound_z) });
 
     // 2 iter1: b->del, c->4, d->5
     // 1 iter2: a->1, b->2, c->3
