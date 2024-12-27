@@ -7,6 +7,7 @@ const RwLock = std.Thread.RwLock;
 const Self = @This();
 const Map = skiplist.SkipList([]const u8, []const u8);
 const GC = std.ArrayList([]const u8);
+pub const Bound = Map.Bound;
 pub const MemTableIterator = struct {
     iter: Map.Iterator,
 
@@ -208,9 +209,9 @@ pub fn get_approximate_size(self: Self) usize {
     return self.approximate_size.load(.monotonic);
 }
 
-// get a iterator over range [lower_bound, upper_bound)
-pub fn iter(self: *Self, lower_bound: []const u8, upper_bound: []const u8) MemTableIterator {
-    return MemTableIterator.init(self.map.iter(lower_bound, upper_bound));
+// get a iterator over range (lower_bound, upper_bound)
+pub fn scan(self: *Self, lower_bound: Bound, upper_bound: Bound) MemTableIterator {
+    return MemTableIterator.init(self.map.scan(lower_bound, upper_bound));
 }
 
 test "put/get" {
@@ -251,7 +252,7 @@ test "recover" {
     }
 }
 
-test "iter" {
+test "scan" {
     const allocator = std.testing.allocator;
     defer std.fs.cwd().deleteTree("./tmp/iter.mm") catch unreachable;
     var mm = Self.init(0, allocator, "./tmp/iter.mm");
@@ -262,16 +263,23 @@ test "iter" {
     try mm.put("d", "d");
     try mm.put("e", "e");
 
-    var it = mm.iter("a", "c");
+    var it = mm.scan(Bound.init("a", .included), Bound.init("d", .excluded));
     while (!it.isEmpty()) {
         std.debug.print("key: {s}, val: {s}\n", .{ it.key(), it.value().? });
         it.next();
     }
+    std.debug.print("======================\n", .{});
 
-    std.debug.print("===========\n", .{});
-    var it3 = mm.iter("", max_key);
-    while (!it3.isEmpty()) {
-        std.debug.print("key: {s}, val: {s}\n", .{ it3.key(), it3.value().? });
-        it3.next();
+    it = mm.scan(Bound.init("c", .excluded), Bound.init("", .unbounded));
+    while (!it.isEmpty()) {
+        std.debug.print("key: {s}, val: {s}\n", .{ it.key(), it.value().? });
+        it.next();
+    }
+    std.debug.print("======================\n", .{});
+
+    it = mm.scan(Bound.init("", .unbounded), Bound.init("", .unbounded));
+    while (!it.isEmpty()) {
+        std.debug.print("key: {s}, val: {s}\n", .{ it.key(), it.value().? });
+        it.next();
     }
 }
