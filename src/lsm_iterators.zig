@@ -43,13 +43,13 @@ pub const LsmIterator = struct {
         return self.inner.key();
     }
 
-    pub fn value(self: LsmIterator) []const u8 {
+    pub fn value(self: LsmIterator) ?[]const u8 {
         return self.inner.value();
     }
 
     pub fn next(self: *LsmIterator) void {
         self.inner.next();
-        if (self.inner.is_empty()) {
+        if (self.inner.isEmpty()) {
             self.is_empty = true;
             return;
         }
