@@ -1,7 +1,6 @@
 const std = @import("std");
 
 pub const BlockBuilder = struct {
-    allocator: std.mem.Allocator,
     offset_v: std.ArrayList(u16),
     data_v: std.ArrayList(u8),
     block_size: usize,
@@ -11,7 +10,6 @@ pub const BlockBuilder = struct {
 
     pub fn init(allocator: std.mem.Allocator, block_size: usize) Self {
         return Self{
-            .allocator = allocator,
             .offset_v = std.ArrayList(u16).init(allocator),
             .data_v = std.ArrayList(u8).init(allocator),
             .block_size = block_size,
@@ -89,18 +87,19 @@ pub const BlockBuilder = struct {
         if (self.is_empty()) {
             @panic("block is empty");
         }
-        return Block.init(self.allocator, self.data_v, self.offset_v);
+        return Block.init(
+            self.data_v.clone(),
+            self.offset_v.clone(),
+        );
     }
 };
 
 pub const Block = struct {
-    allocator: std.mem.Allocator,
     data_v: std.ArrayList(u8),
     offset_v: std.ArrayList(u16),
 
-    pub fn init(allocator: std.mem.Allocator, data_v: std.ArrayList(u8), offset_v: std.ArrayList(u16)) Block {
+    pub fn init(data_v: std.ArrayList(u8), offset_v: std.ArrayList(u16)) Block {
         return Block{
-            .allocator = allocator,
             .data_v = data_v,
             .offset_v = offset_v,
         };
@@ -111,22 +110,56 @@ pub const Block = struct {
         self.offset_v.deinit();
     }
 
+    // ----------------------------------------------------------------------------------------------------
+    // |             Data Section             |              Offset Section             |      Extra      |
+    // ----------------------------------------------------------------------------------------------------
+    // | Entry #1 | Entry #2 | ... | Entry #N | Offset #1 | Offset #2 | ... | Offset #N | num_of_elements |
+    // ----------------------------------------------------------------------------------------------------
+
+    // -----------------------------------------------------------------------
+    // |                           Entry #1                            | ... |
+    // -----------------------------------------------------------------------
+    // | key_len (2B) | key (keylen) | value_len (2B) | value (varlen) | ... |
+    // -----------------------------------------------------------------------
     pub fn encode(self: *Block, r: *[]const u8) !void {
         var buf = try self.data_v.clone();
         errdefer buf.deinit();
 
+        var bw = buf.writer();
         const offset_len = self.offset_v.items.len;
         for (0..offset_len) |i| {
-            try buf.writer().writeInt(u16, self.offset_v.itens[i], .big);
+            try bw.writeInt(u16, self.offset_v.itens[i], .big);
         }
-        try buf.append(@intCast(offset_len));
+        try bw.writeInt(u16, @intCast(offset_len), .big);
         r.* = buf.toOwnedSlice();
     }
 
-    // pub fn decode(data: []const u8) Block {
-    //     var stream = std.io.fixedBufferStream(data);
-    //     var bit_reader = std.io.bitReader(.big, stream.reader());
-    //     var out_bits: usize = 0;
-    //     bit_reader.readBits(u16, data.len - @sizeOf(u16), &out_bits);
-    // }
+    pub fn decode(allocator: std.mem.Allocator, data: []const u8) !Block {
+        const e_num_of_elements = data[data.len - @sizeOf(u16) ..];
+        var stream = std.io.fixedBufferStream(e_num_of_elements);
+        var reader = stream.reader();
+        const num_of_elements = try reader.readInt(u16, .big);
+        const offset_s_len = num_of_elements * @sizeOf(u16);
+        const data_s_len = data.len - offset_s_len - @sizeOf(u16);
+
+        var offset_v = std.ArrayList(u16).init(allocator);
+        var data_v = std.ArrayList(u8).init(allocator);
+
+        var offset_stream = std.io.fixedBufferStream(data[data_s_len .. data.len - @sizeOf(u16)]);
+        var offset_reader = offset_stream.reader();
+
+        while (true) {
+            const offset = offset_reader.readInt(u16, .big) catch |err| {
+                if (err == error.EndOfStream) {
+                    break;
+                }
+                return err;
+            };
+            try offset_v.append(offset);
+        }
+
+        try data_v.appendSlice(data[0..data_s_len]);
+
+        return Block.init(data_v, offset_v);
+    }
 };
