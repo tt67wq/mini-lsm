@@ -1,15 +1,17 @@
 const std = @import("std");
 
 pub const BlockBuilder = struct {
+    allocator: std.mem.Allocator,
     offset_v: std.ArrayList(u16),
     data_v: std.ArrayList(u8),
     block_size: usize,
-    first_key: []const u8,
+    first_key: []u8,
 
     const Self = @This();
 
     pub fn init(allocator: std.mem.Allocator, block_size: usize) Self {
         return Self{
+            .allocator = allocator,
             .offset_v = std.ArrayList(u16).init(allocator),
             .data_v = std.ArrayList(u8).init(allocator),
             .block_size = block_size,
@@ -20,6 +22,7 @@ pub const BlockBuilder = struct {
     pub fn deinit(self: *Self) void {
         self.offset_v.deinit();
         self.data_v.deinit();
+        if (self.first_key.len > 0) self.allocator.free(self.first_key);
     }
 
     pub fn is_empty(self: Self) bool {
@@ -56,14 +59,16 @@ pub const BlockBuilder = struct {
         };
 
         if (self.first_key.len == 0) {
-            @memcpy(&self.first_key, key);
+            self.first_key = self.allocator.dupe(u8, key) catch |err| {
+                std.debug.panic("dupe first key {s} error: {any}", .{ key, err });
+            };
         }
         return true;
     }
 
     fn doAdd(self: *Self, key: []const u8, value: ?[]const u8) !void {
         // add the offset of the data into the offset array
-        self.offset_v.append(@intCast(self.data_v.items.len));
+        try self.offset_v.append(@intCast(self.data_v.items.len));
         const overlap = calculate_overlap(self.first_key, key);
 
         // encode key overlap
@@ -88,8 +93,12 @@ pub const BlockBuilder = struct {
             @panic("block is empty");
         }
         return Block.init(
-            self.data_v.clone(),
-            self.offset_v.clone(),
+            self.data_v.clone() catch |err| {
+                std.debug.panic("clone data_v error: {any}", .{err});
+            },
+            self.offset_v.clone() catch |err| {
+                std.debug.panic("clone offset_v error: {any}", .{err});
+            },
         );
     }
 };
@@ -128,10 +137,10 @@ pub const Block = struct {
         var bw = buf.writer();
         const offset_len = self.offset_v.items.len;
         for (0..offset_len) |i| {
-            try bw.writeInt(u16, self.offset_v.itens[i], .big);
+            try bw.writeInt(u16, self.offset_v.items[i], .big);
         }
         try bw.writeInt(u16, @intCast(offset_len), .big);
-        r.* = buf.toOwnedSlice();
+        r.* = try buf.toOwnedSlice();
     }
 
     pub fn decode(allocator: std.mem.Allocator, data: []const u8) !Block {
@@ -163,3 +172,25 @@ pub const Block = struct {
         return Block.init(data_v, offset_v);
     }
 };
+
+test "block" {
+    var bb = BlockBuilder.init(std.testing.allocator, 4096);
+    defer bb.deinit();
+    try std.testing.expect(bb.add("foo1", "bar1"));
+    try std.testing.expect(bb.add("foo2", "bar2"));
+    try std.testing.expect(bb.add("foo3", "bar3"));
+    try std.testing.expect(bb.add("foo4", "bar4"));
+    try std.testing.expect(bb.add("foo5", "bar5"));
+
+    var b = bb.build();
+    defer b.deinit();
+
+    var eb: []const u8 = undefined;
+    try b.encode(&eb);
+
+    var b2 = try Block.decode(std.testing.allocator, eb);
+    defer b2.deinit();
+
+    try std.testing.expectEqual(b.offset_v.items.len, b2.offset_v.items.len);
+    try std.testing.expectEqual(b.data_v.items.len, b2.data_v.items.len);
+}
