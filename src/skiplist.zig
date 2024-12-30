@@ -380,7 +380,8 @@ fn testEqualBytes(a: []const u8, b: []const u8) bool {
 test "u8" {
     const allocator = std.testing.allocator;
     var rng = std.rand.DefaultPrng.init(0);
-    var list = SkipList(u32, u32).init(allocator, rng.random(), testComp, testEqual);
+    const lt = SkipList(u32, u32);
+    var list = lt.init(allocator, rng.random(), testComp, testEqual);
     defer list.deinit();
     for (0..64) |i| {
         if (i % 2 == 0) {
@@ -395,7 +396,10 @@ test "u8" {
         unreachable;
     }
 
-    var iter = list.iter(16, 32);
+    var iter = list.scan(
+        lt.Bound.init(16, .included),
+        lt.Bound.init(32, .excluded),
+    );
     while (!iter.isEmpty()) {
         std.debug.print("k={d} v={d}\n", .{ iter.key(), iter.value().? });
         iter.next();
@@ -405,7 +409,8 @@ test "u8" {
 test "bytes" {
     const allocator = std.testing.allocator;
     var rng = std.rand.DefaultPrng.init(0);
-    var list = SkipList([]const u8, []const u8).init(
+    const lt = SkipList([]const u8, []const u8);
+    var list = lt.init(
         allocator,
         rng.random(),
         testCompBytes,
@@ -423,7 +428,10 @@ test "bytes" {
     // list.display();
     // std.debug.print("--------------------\n", .{});
 
-    var iter = list.iter("key", "key00121");
+    var iter = list.scan(
+        lt.Bound.init("key", .included),
+        lt.Bound.init("key00121", .excluded),
+    );
     var to_free_key: []const u8 = undefined;
     var to_free_val: []const u8 = undefined;
     var first = true;

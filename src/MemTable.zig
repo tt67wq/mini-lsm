@@ -99,49 +99,43 @@ pub fn deinit(self: *Self) void {
     self.gabbage.deinit();
 }
 
-fn serializeInteger(comptime T: type, i: T, buf: *[@sizeOf(T)]u8) void {
-    std.mem.writeInt(T, buf, i, .big);
-}
-
-fn deserializeInteger(comptime T: type, buf: []const u8) T {
-    return std.mem.readInt(T, buf[0..@sizeOf(T)], .big);
-}
-
-// [length: 4bytes][bytes]
-fn serializeBytes(bytes: []const u8, buf: *std.ArrayList(u8)) !void {
-    var h: [4]u8 = undefined;
-    serializeInteger(u32, @intCast(bytes.len), &h);
-    try buf.appendSlice(h[0..4]);
-    try buf.appendSlice(bytes);
-}
-
-fn deserializeBytes(bytes: []const u8, buf: *[]const u8) usize {
-    const length = deserializeInteger(u32, bytes);
-    const offset = length + 4;
-    buf.* = bytes[4..offset];
-    return offset;
-}
-
 pub fn recover_from_wal(self: *Self) !void {
     const replyer = struct {
+        fn doReply(data: []const u8, mm: *Self) !void {
+            var stream = std.io.fixedBufferStream(data);
+            var reader = stream.reader();
+
+            while (true) {
+                const klen = reader.readInt(u32, .big) catch |err| {
+                    switch (err) {
+                        error.EndOfStream => {
+                            return;
+                        },
+                        else => return err,
+                    }
+                };
+                const kbuf = try mm.allocator.alloc(u8, klen);
+                defer mm.allocator.free(kbuf);
+                _ = try reader.read(kbuf);
+                const vlen = try reader.readInt(u32, .big);
+                const vbuf = try mm.allocator.alloc(u8, vlen);
+                defer mm.allocator.free(vbuf);
+                _ = try reader.read(vbuf);
+
+                try mm.put_to_list(kbuf, vbuf);
+            }
+        }
         pub fn reply(log: ?*const anyopaque, size: usize, mm_ptr: ?*anyopaque) callconv(.C) usize {
             var content: []const u8 = undefined;
             content.ptr = @ptrCast(log.?);
             const data = content[0..size];
-            var offset: usize = 0;
-            while (offset < size) {
-                var kbuf: []const u8 = undefined;
-                var vbuf: []const u8 = undefined;
-                offset += deserializeBytes(data[offset..], &kbuf);
-                offset += deserializeBytes(data[offset..], &vbuf);
 
-                var mm: *Self = @ptrCast(@alignCast(mm_ptr.?));
+            const mm: *Self = @ptrCast(@alignCast(mm_ptr.?));
+            doReply(data, mm) catch |err| {
+                std.log.err("failed to reply: {s}", .{@errorName(err)});
+                @panic("failed to reply");
+            };
 
-                mm.put_to_list(kbuf, vbuf) catch |err| {
-                    std.log.err("failed to put to list: {s}", .{@errorName(err)});
-                    @panic("failed to put to list");
-                };
-            }
             return 0;
         }
     };
@@ -170,11 +164,17 @@ fn put_to_list(self: *Self, key: []const u8, value: []const u8) !void {
 
 fn put_to_wal(self: Self, key: []const u8, value: []const u8) !void {
     // [key-size: 4bytes][key][value-size: 4bytes][value]
+
     if (self.wal) |w| {
         var buf = std.ArrayList(u8).init(self.allocator);
+        var bw = buf.writer();
         defer buf.deinit();
-        try serializeBytes(key, &buf);
-        try serializeBytes(value, &buf);
+        // try serializeBytes(key, &buf);
+        // try serializeBytes(value, &buf);
+        try bw.writeInt(u32, @intCast(key.len), .big);
+        _ = try bw.write(key);
+        try bw.writeInt(u32, @intCast(value.len), .big);
+        _ = try bw.write(value);
         try w.append(buf.items);
     }
 }
