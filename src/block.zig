@@ -198,5 +198,11 @@ test "block" {
     defer b2.deinit();
 
     try std.testing.expectEqual(b.offset_v.items.len, b2.offset_v.items.len);
+    for (0..b.offset_v.items.len) |i| {
+        try std.testing.expectEqual(b.offset_v.items[i], b2.offset_v.items[i]);
+    }
     try std.testing.expectEqual(b.data_v.items.len, b2.data_v.items.len);
+    for (0..b.data_v.items.len) |i| {
+        try std.testing.expectEqual(b.data_v.items[i], b2.data_v.items[i]);
+    }
 }
