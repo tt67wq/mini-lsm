@@ -130,9 +130,11 @@ pub const Block = struct {
     // -----------------------------------------------------------------------
     // | key_len (2B) | key (keylen) | value_len (2B) | value (varlen) | ... |
     // -----------------------------------------------------------------------
-    pub fn encode(self: *Block, r: *[]const u8) !void {
+
+    // NOTICE: you have to free returned slice
+    pub fn encode(self: *Block, allocator: std.mem.Allocator) ![]const u8 {
         var buf = try self.data_v.clone();
-        errdefer buf.deinit();
+        defer buf.deinit();
 
         var bw = buf.writer();
         const offset_len = self.offset_v.items.len;
@@ -140,7 +142,11 @@ pub const Block = struct {
             try bw.writeInt(u16, self.offset_v.items[i], .big);
         }
         try bw.writeInt(u16, @intCast(offset_len), .big);
-        r.* = try buf.toOwnedSlice();
+
+        const r = try allocator.alloc(u8, buf.items.len);
+        @memcpy(r, buf.items.ptr);
+
+        return r;
     }
 
     pub fn decode(allocator: std.mem.Allocator, data: []const u8) !Block {
@@ -185,8 +191,8 @@ test "block" {
     var b = bb.build();
     defer b.deinit();
 
-    var eb: []const u8 = undefined;
-    try b.encode(&eb);
+    const eb = try b.encode(std.testing.allocator);
+    defer std.testing.allocator.free(eb);
 
     var b2 = try Block.decode(std.testing.allocator, eb);
     defer b2.deinit();
