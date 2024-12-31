@@ -71,20 +71,21 @@ pub const BlockBuilder = struct {
         try self.offset_v.append(@intCast(self.data_v.items.len));
         const overlap = calculate_overlap(self.first_key, key);
 
+        var dw = self.data_v.writer();
         // encode key overlap
-        try self.data_v.append(@intCast(overlap));
+        try dw.writeInt(u16, @intCast(overlap), .big);
         // encode key length
-        try self.data_v.append(@intCast(key.len - overlap));
+        try dw.writeInt(u16, @intCast(key.len - overlap), .big);
 
         // encode key content
-        try self.data_v.appendSlice(key[overlap..]);
+        _ = try dw.write(key[overlap..]);
         // encode value length
         if (value) |v| {
-            try self.data_v.append(@intCast(v.len));
+            try dw.writeInt(u16, @intCast(v.len), .big);
             // encode value content
-            try self.data_v.appendSlice(v);
+            _ = try dw.write(v);
         } else {
-            try self.data_v.append(0);
+            try dw.writeInt(u16, 0, .big);
         }
     }
 
@@ -117,6 +118,17 @@ pub const Block = struct {
     pub fn deinit(self: *Block) void {
         self.data_v.deinit();
         self.offset_v.deinit();
+    }
+
+    pub fn getFirstKey(self: Block, allocator: std.mem.Allocator) ![]const u8 {
+        var stream = std.io.fixedBufferStream(self.data_v.items);
+        var reader = stream.reader();
+        const key_len = try reader.readInt(u16, .big);
+
+        const key = try allocator.alloc(u8, @intCast(key_len));
+        errdefer allocator.free(key);
+        _ = try reader.read(key);
+        return key;
     }
 
     // ----------------------------------------------------------------------------------------------------
@@ -176,6 +188,117 @@ pub const Block = struct {
         try data_v.appendSlice(data[0..data_s_len]);
 
         return Block.init(data_v, offset_v);
+    }
+};
+
+pub const BlockIterator = struct {
+    allocator: std.mem.Allocator,
+    block: Block,
+    first_key: []u8,
+    key_v: std.ArrayList(u8),
+    value_v: std.ArrayList(u8),
+    idx: usize,
+
+    const Self = @This();
+
+    pub fn init(allocator: std.mem.Allocator, block: Block) Self {
+        return Self{
+            .allocator = allocator,
+            .block = block,
+            .first_key = block.getFirstKey(allocator) catch |err| {
+                std.debug.panic("get first key error: {any}", .{err});
+            },
+            .key_v = std.ArrayList(u8).init(allocator),
+            .value_v = std.ArrayList(u8).init(allocator),
+            .idx = 0,
+        };
+    }
+
+    pub fn deinit(self: *Self) void {
+        self.allocator.free(self.first_key);
+        self.key_v.deinit();
+        self.value_v.deinit();
+    }
+
+    pub fn createAndSeekToFirst(allocator: std.mem.Allocator, block: Block) Self {
+        var it = Self.init(allocator, block);
+        it.seekToFirst();
+        return it;
+    }
+
+    pub fn createAndSeekToKey(allocator: std.mem.Allocator, block: Block, kk: []const u8) Self {
+        var it = Self.init(allocator, block);
+        it.seekToKey(kk);
+        return it;
+    }
+
+    pub fn key(self: Self) []const u8 {
+        return self.key_v.items;
+    }
+
+    pub fn value(self: Self) []const u8 {
+        return self.value_v.items;
+    }
+
+    pub fn isEmpty(self: Self) bool {
+        return self.key_v.items.len == 0;
+    }
+
+    fn seekToFirst(self: *Self) void {
+        self.seekTo(0);
+    }
+
+    fn seekTo(self: *Self, idx: usize) void {
+        if (idx >= self.block.offset_v.items.len) {
+            self.key_v.clearAndFree();
+            self.value_v.clearAndFree();
+            return;
+        }
+        const offset: usize = @intCast(self.block.offset_v.items[idx]);
+        self.seekToOffset(offset) catch |err| {
+            std.debug.panic("seek to offset {d} error: {any}", .{ offset, err });
+        };
+        self.idx = idx;
+    }
+
+    fn seekToOffset(self: *Self, offset: usize) !void {
+        var stream = std.io.fixedBufferStream(self.block.data_v.items[offset..]);
+        var reader = stream.reader();
+
+        var buffer: [4096]u8 = undefined;
+        var fba = std.heap.FixedBufferAllocator.init(&buffer);
+        const allocator = fba.allocator();
+
+        const overlap_len = try reader.readInt(u16, .big);
+        const key_len = try reader.readInt(u16, .big);
+        const kb = try allocator.alloc(u8, key_len);
+        _ = try reader.read(kb);
+        self.key_v.clearAndFree();
+        try self.key_v.appendSlice(self.first_key[0..overlap_len]);
+        try self.key_v.appendSlice(kb);
+
+        const value_len = try reader.readInt(u16, .big);
+        const vb = try allocator.alloc(u8, value_len);
+        _ = try reader.read(vb);
+        self.value_v.clearAndFree();
+        try self.value_v.appendSlice(vb);
+    }
+
+    fn seekToKey(self: *Self, kk: []const u8) void {
+        var low: usize = 0;
+        var high = self.block.offset_v.items.len;
+
+        while (low < high) {
+            const mid = low + (high - low) / 2;
+            self.seekTo(mid);
+            std.debug.assert(!self.isEmpty());
+            switch (std.mem.order(u8, self.key(), kk)) {
+                .lt => low = mid + 1,
+                .gt => high = mid,
+                .eq => return,
+            }
+        }
+        self.seekTo(low);
     }
 };
 
