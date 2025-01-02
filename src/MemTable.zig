@@ -62,7 +62,7 @@ pub fn init(id: usize, allocator: std.mem.Allocator, path: ?[]const u8) Self {
     var rng = std.rand.DefaultPrng.init(0);
 
     return Self{
-        .map = skiplist.SkipList([]const u8, []const u8).init(
+        .map = Map.init(
             allocator,
             rng.random(),
             compFunc,
