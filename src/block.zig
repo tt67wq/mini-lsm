@@ -120,9 +120,10 @@ pub const Block = struct {
         self.offset_v.deinit();
     }
 
-    pub fn getFirstKey(self: Block, allocator: std.mem.Allocator) ![]const u8 {
+    pub fn getFirstKey(self: Block, allocator: std.mem.Allocator) ![]u8 {
         var stream = std.io.fixedBufferStream(self.data_v.items);
         var reader = stream.reader();
+        _ = try reader.readInt(u16, .big);
         const key_len = try reader.readInt(u16, .big);
 
         const key = try allocator.alloc(u8, @intCast(key_len));
@@ -244,6 +245,11 @@ pub const BlockIterator = struct {
         return self.key_v.items.len == 0;
     }
 
+    pub fn next(self: *Self) void {
+        self.idx += 1;
+        self.seekTo(self.idx);
+    }
+
     fn seekToFirst(self: *Self) void {
         self.seekTo(0);
     }
@@ -327,5 +333,30 @@ test "block" {
     try std.testing.expectEqual(b.data_v.items.len, b2.data_v.items.len);
     for (0..b.data_v.items.len) |i| {
         try std.testing.expectEqual(b.data_v.items[i], b2.data_v.items[i]);
+    }
+}
+
+test "block iterator" {
+    var bb = BlockBuilder.init(std.testing.allocator, 4096);
+    defer bb.deinit();
+    try std.testing.expect(bb.add("foo1", "bar1"));
+    try std.testing.expect(bb.add("foo2", "bar2"));
+    try std.testing.expect(bb.add("foo3", "bar3"));
+    try std.testing.expect(bb.add("foo4", "bar4"));
+    try std.testing.expect(bb.add("foo5", "bar5"));
+
+    var b = bb.build();
+    defer b.deinit();
+
+    var b_it = BlockIterator.createAndSeekToFirst(std.testing.allocator, b);
+    defer b_it.deinit();
+
+    b_it.seekToFirst();
+    try std.testing.expectEqualStrings("foo1", b_it.key());
+    try std.testing.expectEqualStrings("bar1", b_it.value());
+
+    while (!b_it.isEmpty()) {
+        std.debug.print("key: {s}, value: {s}\n", .{ b_it.key(), b_it.value() });
+        b_it.next();
     }
 }
