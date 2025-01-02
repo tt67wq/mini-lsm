@@ -32,7 +32,7 @@ pub const StorageState = struct {
     }
 
     pub fn deinit(self: *StorageState) void {
-        var mm = self.get_mem_table();
+        var mm = self.getMemTable();
         mm.deinit();
         self.allocator.destroy(mm);
         for (self.imm_mem_tables.items) |m| {
@@ -43,7 +43,7 @@ pub const StorageState = struct {
         self.imm_mem_tables.deinit();
     }
 
-    pub fn get_mem_table(self: *StorageState) *MemTable {
+    pub fn getMemTable(self: *StorageState) *MemTable {
         return self.mem_table.load(.seq_cst);
     }
 };
@@ -88,7 +88,7 @@ pub const StorageInner = struct {
             unreachable;
         } else {
             if (options.enable_wal) {
-                const wal_path = path_of_wal(allocator, path, next_sst_id);
+                const wal_path = pathOfWal(allocator, path, next_sst_id);
                 defer allocator.free(wal_path);
                 const new_mm = allocator.create(MemTable) catch unreachable;
                 new_mm.* = MemTable.init(next_sst_id, allocator, wal_path);
@@ -115,7 +115,7 @@ pub const StorageInner = struct {
         return self.next_sst_id.fetchAdd(1, .seq_cst);
     }
 
-    fn path_of_wal(
+    fn pathOfWal(
         allocator: std.mem.Allocator,
         path: []const u8,
         id: usize,
@@ -127,7 +127,7 @@ pub const StorageInner = struct {
 
     pub fn get(self: *Self, key: []const u8, value: *[]const u8) bool {
         // search in memtable
-        if (self.state.get_mem_table().get(key, value)) {
+        if (self.state.getMemTable().get(key, value)) {
             if (value.*.len == 0) {
                 // tomestone
                 return false;
@@ -154,30 +154,30 @@ pub const StorageInner = struct {
         return false;
     }
 
-    pub fn write_batch(self: *Self, records: []const WriteBatchRecord) !void {
+    pub fn writeBatch(self: *Self, records: []const WriteBatchRecord) !void {
         for (records) |record| {
             switch (record) {
                 .put => |pp| {
-                    self.state.get_mem_table().put(pp.key, pp.value) catch |err| {
+                    self.state.getMemTable().put(pp.key, pp.value) catch |err| {
                         std.log.err("put failed: {s}", .{@errorName(err)});
                         @panic("put failed");
                     };
-                    try self.try_freeze(self.state.get_mem_table().get_approximate_size());
+                    try self.tryFreeze(self.state.getMemTable().getApproximateSize());
                 },
                 .delete => |dd| {
                     // we use "" as the tombstone value
-                    self.state.get_mem_table().put(dd, "") catch |err| {
+                    self.state.getMemTable().put(dd, "") catch |err| {
                         std.log.err("delete failed: {s}", .{@errorName(err)});
                         @panic("delete failed");
                     };
-                    try self.try_freeze(self.state.get_mem_table().get_approximate_size());
+                    try self.tryFreeze(self.state.getMemTable().getApproximateSize());
                 },
             }
         }
     }
 
     pub fn put(self: *Self, key: []const u8, value: []const u8) !void {
-        return self.write_batch(&[_]WriteBatchRecord{
+        return self.writeBatch(&[_]WriteBatchRecord{
             .{
                 .put = .{
                     .key = key,
@@ -188,14 +188,14 @@ pub const StorageInner = struct {
     }
 
     pub fn delete(self: *Self, key: []const u8) !void {
-        return self.write_batch(&[_]WriteBatchRecord{
+        return self.writeBatch(&[_]WriteBatchRecord{
             .{
                 .delete = key,
             },
         });
     }
 
-    fn try_freeze(self: *Self, estimate_size: usize) !void {
+    fn tryFreeze(self: *Self, estimate_size: usize) !void {
         if (estimate_size < self.options.target_sst_size) {
             return;
         }
@@ -203,22 +203,22 @@ pub const StorageInner = struct {
             self.state_lock.lockShared();
             errdefer self.state_lock.unlockShared();
             // double check
-            if (self.state.get_mem_table().get_approximate_size() >= self.options.target_sst_size) {
+            if (self.state.getMemTable().getApproximateSize() >= self.options.target_sst_size) {
                 self.state_lock.unlockShared();
-                try self.force_freeze_memtable();
+                try self.forceFreezeMemtable();
                 return;
             }
             self.state_lock.unlockShared();
         }
     }
 
-    fn force_freeze_memtable(self: *Self) !void {
+    fn forceFreezeMemtable(self: *Self) !void {
         const next_sst_id = self.get_next_sst_id();
         std.debug.print("freeze memtable {d}\n", .{next_sst_id - 1});
         const new_mm = self.allocator.create(MemTable) catch unreachable;
         errdefer self.allocator.destroy(new_mm);
         if (self.options.enable_wal) {
-            const mm_path = path_of_wal(self.allocator, self.path, next_sst_id);
+            const mm_path = pathOfWal(self.allocator, self.path, next_sst_id);
             defer self.allocator.free(mm_path);
             new_mm.* = MemTable.init(next_sst_id, self.allocator, mm_path);
         } else {
@@ -232,7 +232,7 @@ pub const StorageInner = struct {
             old_mm = self.state.mem_table.swap(new_mm, .seq_cst);
             try self.state.imm_mem_tables.append(old_mm);
         }
-        try old_mm.sync_wal();
+        try old_mm.syncWal();
     }
 
     fn scan(self: *Self, lower: Bound, upper: Bound) !LsmIterator {
@@ -246,7 +246,7 @@ pub const StorageInner = struct {
             );
         }
         try memtable_iters.append(
-            .{ .mem_iter = self.state.get_mem_table().scan(lower, upper) },
+            .{ .mem_iter = self.state.getMemTable().scan(lower, upper) },
         );
         self.state_lock.unlockShared();
 
