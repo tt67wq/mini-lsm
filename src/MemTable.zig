@@ -68,7 +68,7 @@ pub fn init(id: usize, allocator: std.mem.Allocator, path: ?[]const u8) Self {
             compFunc,
             equalFunc,
         ),
-        .wal = wal_init(path),
+        .wal = walInit(path),
         .id = id,
         .allocator = allocator,
         .gabbage = std.ArrayList([]const u8).init(allocator),
@@ -76,7 +76,7 @@ pub fn init(id: usize, allocator: std.mem.Allocator, path: ?[]const u8) Self {
     };
 }
 
-fn wal_init(path: ?[]const u8) ?Wal {
+fn walInit(path: ?[]const u8) ?Wal {
     if (path) |p| {
         return Wal.init(p) catch |err| {
             std.log.err("failed to create wal: {s}", .{@errorName(err)});
@@ -99,7 +99,7 @@ pub fn deinit(self: *Self) void {
     self.gabbage.deinit();
 }
 
-pub fn recover_from_wal(self: *Self) !void {
+pub fn recoverFromWal(self: *Self) !void {
     const replyer = struct {
         fn doReply(data: []const u8, mm: *Self) !void {
             var stream = std.io.fixedBufferStream(data);
@@ -126,7 +126,7 @@ pub fn recover_from_wal(self: *Self) !void {
                 defer allocator.free(vbuf);
                 _ = try reader.read(vbuf);
 
-                try mm.put_to_list(kbuf, vbuf);
+                try mm.putToList(kbuf, vbuf);
             }
         }
         pub fn reply(log: ?*const anyopaque, size: usize, mm_ptr: ?*anyopaque) callconv(.C) usize {
@@ -149,7 +149,7 @@ pub fn recover_from_wal(self: *Self) !void {
     }
 }
 
-fn put_to_list(self: *Self, key: []const u8, value: []const u8) !void {
+fn putToList(self: *Self, key: []const u8, value: []const u8) !void {
     const kk = try self.allocator.dupe(u8, key);
     errdefer self.allocator.free(kk);
     const vv = try self.allocator.dupe(u8, value);
@@ -166,7 +166,7 @@ fn put_to_list(self: *Self, key: []const u8, value: []const u8) !void {
     _ = self.approximate_size.fetchAdd(@intCast(key.len + value.len), .monotonic);
 }
 
-fn put_to_wal(self: Self, key: []const u8, value: []const u8) !void {
+fn putToWal(self: Self, key: []const u8, value: []const u8) !void {
     // [key-size: 4bytes][key][value-size: 4bytes][value]
 
     if (self.wal) |w| {
@@ -184,8 +184,8 @@ fn put_to_wal(self: Self, key: []const u8, value: []const u8) !void {
 }
 
 pub fn put(self: *Self, key: []const u8, value: []const u8) !void {
-    try self.put_to_wal(key, value);
-    try self.put_to_list(key, value);
+    try self.putToWal(key, value);
+    try self.putToList(key, value);
 }
 
 pub fn get(self: *Self, key: []const u8, val: *[]const u8) bool {
@@ -199,17 +199,17 @@ pub fn get(self: *Self, key: []const u8, val: *[]const u8) bool {
     return false;
 }
 
-pub fn sync_wal(self: Self) !void {
+pub fn syncWal(self: Self) !void {
     if (self.wal) |w| {
         try w.sync();
     }
 }
 
-pub fn is_empty(self: Self) bool {
-    return self.map.is_empty();
+pub fn isEmpty(self: Self) bool {
+    return self.map.isEmpty();
 }
 
-pub fn get_approximate_size(self: Self) usize {
+pub fn getApproximateSize(self: Self) usize {
     return self.approximate_size.load(.monotonic);
 }
 
@@ -239,14 +239,14 @@ test "recover" {
     try mm.put("foo", "bar");
     try mm.put("foo1", "bar1");
     try mm.put("foo2", "bar2");
-    try mm.sync_wal();
+    try mm.syncWal();
 
     mm.deinit();
 
     // reopen
     mm = Self.init(0, allocator, "./tmp/recover.mm");
     defer mm.deinit();
-    try mm.recover_from_wal();
+    try mm.recoverFromWal();
 
     var val: []const u8 = undefined;
     if (mm.get("foo", &val)) {
