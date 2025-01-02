@@ -51,7 +51,7 @@ pub fn sync(self: Self) WalError!void {
     }
 }
 
-pub fn sync_meta(self: Self) WalError!void {
+pub fn syncMeta(self: Self) WalError!void {
     if (swal.swal_sync_meta(self.wal) != 0) {
         return WalError.WalSyncFailed;
     }
@@ -67,11 +67,11 @@ pub fn reset(self: Self, offset: usize) void {
     _ = swal.swal_reset(self.wal, offset, 0);
 }
 
-pub fn start_offset(self: Self) usize {
+pub fn startOffset(self: Self) usize {
     return swal.swal_start_offset(self.wal);
 }
 
-pub fn end_offset(self: Self) usize {
+pub fn endOffset(self: Self) usize {
     return swal.swal_end_offset(self.wal);
 }
 
@@ -85,7 +85,7 @@ test "wal" {
         try wal.append(ret);
     }
     try wal.sync();
-    try wal.sync_meta();
+    try wal.syncMeta();
 
     const replyer = struct {
         pub fn reply(log: ?*const anyopaque, size: usize, _: ?*anyopaque) callconv(.C) usize {
@@ -110,7 +110,7 @@ test "reopen wal" {
         try wal.append(ret);
     }
     try wal.sync();
-    try wal.sync_meta();
+    try wal.syncMeta();
 
     wal.deinit();
 
@@ -141,13 +141,13 @@ test "reset" {
         try wal.append(ret);
     }
     try wal.sync();
-    try wal.sync_meta();
+    try wal.syncMeta();
 
-    std.debug.print("start offset: {d}\n", .{wal.start_offset()});
-    std.debug.print("end offset: {d}\n", .{wal.end_offset()});
+    std.debug.print("start offset: {d}\n", .{wal.startOffset()});
+    std.debug.print("end offset: {d}\n", .{wal.endOffset()});
 
     wal.reset(700);
 
-    std.debug.print("start offset: {d}\n", .{wal.start_offset()});
-    std.debug.print("end offset: {d}\n", .{wal.end_offset()});
+    std.debug.print("start offset: {d}\n", .{wal.startOffset()});
+    std.debug.print("end offset: {d}\n", .{wal.endOffset()});
 }
