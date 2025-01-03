@@ -32,6 +32,27 @@ pub fn init(allocator: Allocator, num_bits: u64) !Self {
     };
 }
 
+pub fn encode(self: Self, allocator: Allocator) ![]u8 {
+    var s = std.ArrayList(u8).init(allocator);
+    var writer = s.writer();
+    try writer.writeInt(u64, self.len, .big);
+    try writer.writeAll(self.bytes);
+    return s.toOwnedSlice();
+}
+
+pub fn decode(allocator: Allocator, encoded: []u8) !Self {
+    var s = std.io.fixedBufferStream(encoded);
+    var reader = s.reader();
+
+    const len = try reader.readInt(u64, .big);
+    const bytes = try reader.readAllAlloc(allocator, std.math.maxInt(usize));
+    return .{
+        .allocator = allocator,
+        .bytes = bytes,
+        .len = len,
+    };
+}
+
 /// Deinitialize and free resources
 pub fn deinit(self: *Self) void {
     self.allocator.free(self.bytes);
