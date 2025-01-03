@@ -132,6 +132,10 @@ pub const Block = struct {
         return key;
     }
 
+    fn asInt(comptime T: type, bytes: []const u8) T {
+        return std.mem.readInt(T, bytes[0..@sizeOf(T)], .big);
+    }
+
     // ----------------------------------------------------------------------------------------------------
     // |             Data Section             |              Offset Section             |      Extra      |
     // ----------------------------------------------------------------------------------------------------
@@ -164,9 +168,10 @@ pub const Block = struct {
 
     pub fn decode(allocator: std.mem.Allocator, data: []const u8) !Block {
         const e_num_of_elements = data[data.len - @sizeOf(u16) ..];
-        var stream = std.io.fixedBufferStream(e_num_of_elements);
-        var reader = stream.reader();
-        const num_of_elements = try reader.readInt(u16, .big);
+        // var stream = std.io.fixedBufferStream(e_num_of_elements);
+        // var reader = stream.reader();
+        // const num_of_elements = try reader.readInt(u16, .big);
+        const num_of_elements = asInt(u16, e_num_of_elements);
         const offset_s_len = num_of_elements * @sizeOf(u16);
         const data_s_len = data.len - offset_s_len - @sizeOf(u16);
 
