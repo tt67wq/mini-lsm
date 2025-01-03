@@ -35,7 +35,11 @@ pub fn deinit(self: Self) void {
 }
 
 pub fn read(self: Self, offset: u64, buf: []u8) !usize {
-    return try self.file.pread(buf, offset);
+    return try self.file.preadAll(buf, offset);
+}
+
+pub fn reader(self: Self) fs.File.Reader {
+    return self.file.reader();
 }
 
 test "file" {
