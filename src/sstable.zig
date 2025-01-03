@@ -1,4 +1,6 @@
 const std = @import("std");
+const FileObject = @import("FileObject.zig");
+const BloomFilter = @import("bloom_filter/BloomFilter.zig");
 const hash = std.hash;
 
 pub const TableMeta = struct {
@@ -9,7 +11,12 @@ pub const TableMeta = struct {
 
     const Self = @This();
 
-    pub fn decodeTableMeta(buf: []const u8, allocator: std.mem.Allocator, container: *std.ArrayList(TableMeta)) !void {
+    pub fn decodeTableMeta(
+        buf: []const u8,
+        allocator: std.mem.Allocator,
+    ) ![]TableMeta {
+        var container = std.ArrayList(TableMeta).init(allocator);
+        errdefer container.deinit();
         var stream = std.io.fixedBufferStream(buf);
         var reader = stream.reader();
         const num = try reader.readInt(u32, .big);
@@ -35,6 +42,7 @@ pub const TableMeta = struct {
         if (cksm2 != cksm) {
             std.debug.panic("checksum mismatch", .{});
         }
+        return container.toOwnedSlice();
     }
 
     pub fn deinit(self: Self) void {
@@ -43,7 +51,7 @@ pub const TableMeta = struct {
     }
 };
 
-pub fn batchEncodeTableMeta(metas: []const TableMeta, buf: *std.ArrayList(u8)) void {
+pub fn batchEncodeTableMeta(metas: []const TableMeta, allocator: std.mem.Allocator) ![]u8 {
     var estimated_size: usize = 0;
     estimated_size += @sizeOf(u32);
     for (metas) |meta| {
@@ -54,6 +62,9 @@ pub fn batchEncodeTableMeta(metas: []const TableMeta, buf: *std.ArrayList(u8)) v
         estimated_size += meta.last_key.len;
     }
     estimated_size += @sizeOf(u32);
+
+    var buf = std.ArrayList(u8).init(allocator);
+    errdefer buf.deinit();
 
     const writeFn = struct {
         fn doWrite(
@@ -78,13 +89,56 @@ pub fn batchEncodeTableMeta(metas: []const TableMeta, buf: *std.ArrayList(u8)) v
     }.doWrite;
 
     writeFn(
-        buf,
+        &buf,
         estimated_size,
         metas,
     ) catch |err| {
         std.debug.panic("encode table meta failed: {s}", .{@errorName(err)});
     };
+
+    return buf.toOwnedSlice();
 }
+
+// pub const SsTable = struct {
+//     allocator: std.mem.Allocator,
+//     file: FileObject,
+//     table_meta: TableMeta,
+//     meta_offset: usize,
+//     bloom: ?BloomFilter,
+//     id: u64,
+//     first_key: []const u8,
+//     last_key: []const u8,
+//     max_ts: u64,
+
+//     const Self = @This();
+
+//     fn asInt(comptime T: type, bytes: []const u8) T {
+//         return std.mem.readInt(T, bytes[0..@sizeOf(T)], .big);
+//     }
+
+//     pub fn open(allocator: std.mem.Allocator, id: u64, file: FileObject) !Self {
+//         const len = file.size;
+
+//         // read bloom filter
+//         var raw_bloom_offset: [4]u8 = undefined;
+//         _ = try file.read(len - 4, raw_bloom_offset[0..]);
+//         const bloom_offset: u64 = @intCast(asInt(u32, raw_bloom_offset[0..]));
+
+//         std.debug.assert(len - 4 - bloom_offset > 0);
+//         const raw_bloom = try allocator.alloc(u8, len - 4 - bloom_offset);
+//         defer allocator.free(raw_bloom);
+//         _ = try file.read(bloom_offset, raw_bloom);
+//         const bloom_filter = try BloomFilter.decode(allocator, raw_bloom);
+
+//         // read meta
+//         var row_meta_offset: [4]u8 = undefined;
+//         _ = try file.read(bloom_offset - 4, undefined);
+//         const meta_offset: u64 = @intCast(asInt(u32, row_meta_offset[0..]));
+//         const raw_meta = try allocator.alloc(u8, bloom_offset - 4 - meta_offset);
+//         defer allocator.free(raw_meta);
+//         _ = try file.read(meta_offset, raw_meta);
+//     }
+// };
 
 test "table_meta" {
     const tms = [_]TableMeta{
@@ -95,17 +149,13 @@ test "table_meta" {
         .{ .allocator = std.testing.allocator, .offset = 500, .first_key = "yz", .last_key = "ab" },
     };
 
-    var buf = std.ArrayList(u8).init(std.testing.allocator);
-    defer buf.deinit();
+    const encoded = try batchEncodeTableMeta(tms[0..], std.testing.allocator);
+    defer std.testing.allocator.free(encoded);
 
-    batchEncodeTableMeta(tms[0..], &buf);
+    const metas = try TableMeta.decodeTableMeta(encoded, std.testing.allocator);
+    defer std.testing.allocator.free(metas);
 
-    var container = std.ArrayList(TableMeta).init(std.testing.allocator);
-    defer container.deinit();
-
-    try TableMeta.decodeTableMeta(buf.items, std.testing.allocator, &container);
-
-    for (container.items) |tm| {
+    for (metas) |tm| {
         std.debug.print("{s} {s}\n", .{ tm.first_key, tm.last_key });
         var tmm = tm;
         tmm.deinit();
