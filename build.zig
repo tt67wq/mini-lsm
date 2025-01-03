@@ -85,19 +85,6 @@ pub fn build(b: *std.Build) void {
 
     const run_storage_unit_tests = b.addRunArtifact(storage_unit_tests);
 
-    // const iterator_unit_tests = b.addTest(.{
-    //     .root_source_file = b.path("src/iterators/MergeIterators.zig"),
-    //     .target = target,
-    //     .optimize = optimize,
-    // });
-    // iterator_unit_tests.linkLibC();
-    // iterator_unit_tests.addIncludePath(LazyPath{ .cwd_relative = "./include" });
-    // iterator_unit_tests.addCSourceFiles(.{
-    //     .files = &c_source_files,
-    //     .flags = &c_flags,
-    // });
-    // const run_iterator_unit_tests = b.addRunArtifact(iterator_unit_tests);
-
     // Similar to creating the run step earlier, this exposes a `test` step to
     // the `zig build --help` menu, providing a way for the user to request
     // running the unit tests.
