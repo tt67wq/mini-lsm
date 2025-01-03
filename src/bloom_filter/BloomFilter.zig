@@ -1,4 +1,5 @@
 const std = @import("std");
+const io = std.io;
 const expect = std.testing.expect;
 const math = std.math;
 const Allocator = std.mem.Allocator;
@@ -40,6 +41,27 @@ pub fn init(
 /// Deinitialize and free resources
 pub fn deinit(self: *Self) void {
     self.bits.deinit();
+}
+
+pub fn encode(self: Self, allocator: std.mem.Allocator) ![]u8 {
+    var s = std.ArrayList(u8).init(allocator);
+    var writer = s.writer();
+    try writer.writeByte(self.num_hash_funcs);
+    const bytes = try self.bits.encode(allocator);
+    defer allocator.free(bytes);
+    try writer.writeAll(bytes);
+    return s.toOwnedSlice();
+}
+
+pub fn decode(allocator: std.mem.Allocator, encoded: []u8) !Self {
+    var s = std.io.fixedBufferStream(encoded);
+    var reader = s.reader();
+    const num_hash_funcs = try reader.readByte();
+    const bits = try BitArray.decode(allocator, encoded[1..]);
+    return .{
+        .num_hash_funcs = num_hash_funcs,
+        .bits = bits,
+    };
 }
 
 /// Insert an item into the Bloom filter.
@@ -124,4 +146,26 @@ test "contains_false" {
 
     try filter.insert("hi");
     try expect(try filter.contains("yo") == false);
+}
+
+test "encode/decode" {
+    var filter = try Self.init(std.testing.allocator, 1024, 0.02);
+    defer filter.deinit();
+
+    try filter.insert("foo1");
+    try filter.insert("foo2");
+    try filter.insert("foo3");
+    try filter.insert("foo4");
+    try filter.insert("foo5");
+
+    const bytes = try filter.encode(std.testing.allocator);
+    defer std.testing.allocator.free(bytes);
+
+    var filter2 = try Self.decode(std.testing.allocator, bytes);
+    defer filter2.deinit();
+    try expect(try filter2.contains("foo1") == true);
+    try expect(try filter2.contains("foo2") == true);
+    try expect(try filter2.contains("foo3") == true);
+    try expect(try filter2.contains("foo4") == true);
+    try expect(try filter2.contains("foo5") == true);
 }
