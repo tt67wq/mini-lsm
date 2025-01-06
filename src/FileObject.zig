@@ -3,7 +3,7 @@ const fs = std.fs;
 
 const Self = @This();
 
-file: std.fs.File,
+file: ?std.fs.File,
 size: usize,
 
 pub fn init(path: []const u8, data: []const u8) !Self {
@@ -31,15 +31,15 @@ pub fn open(path: []const u8) !Self {
 }
 
 pub fn deinit(self: Self) void {
-    self.file.close();
+    if (self.file) |f| f.close();
 }
 
 pub fn read(self: Self, offset: u64, buf: []u8) !usize {
-    return try self.file.preadAll(buf, offset);
+    return try self.file.?.preadAll(buf, offset);
 }
 
 pub fn reader(self: Self) fs.File.Reader {
-    return self.file.reader();
+    return self.file.?.reader();
 }
 
 test "file" {
