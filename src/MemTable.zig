@@ -105,10 +105,6 @@ pub fn recoverFromWal(self: *Self) !void {
             var stream = std.io.fixedBufferStream(data);
             var reader = stream.reader();
 
-            var buffer: [4096]u8 = undefined;
-            var fba = std.heap.FixedBufferAllocator.init(&buffer);
-            const allocator = fba.allocator();
-
             while (true) {
                 const klen = reader.readInt(u32, .big) catch |err| {
                     switch (err) {
@@ -118,12 +114,12 @@ pub fn recoverFromWal(self: *Self) !void {
                         else => return err,
                     }
                 };
-                const kbuf = try allocator.alloc(u8, klen);
-                defer allocator.free(kbuf);
+                const kbuf = try self.allocator.alloc(u8, klen);
+                defer self.allocator.free(kbuf);
                 _ = try reader.read(kbuf);
                 const vlen = try reader.readInt(u32, .big);
-                const vbuf = try allocator.alloc(u8, vlen);
-                defer allocator.free(vbuf);
+                const vbuf = try self.allocator.alloc(u8, vlen);
+                defer self.allocator.free(vbuf);
                 _ = try reader.read(vbuf);
 
                 try mm.putToList(kbuf, vbuf);

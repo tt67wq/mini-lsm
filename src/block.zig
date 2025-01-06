@@ -160,17 +160,11 @@ pub const Block = struct {
         }
         try bw.writeInt(u16, @intCast(offset_len), .big);
 
-        const r = try allocator.alloc(u8, buf.items.len);
-        @memcpy(r, buf.items.ptr);
-
-        return r;
+        return try allocator.dupe(u8, buf.items);
     }
 
     pub fn decode(allocator: std.mem.Allocator, data: []const u8) !Block {
         const e_num_of_elements = data[data.len - @sizeOf(u16) ..];
-        // var stream = std.io.fixedBufferStream(e_num_of_elements);
-        // var reader = stream.reader();
-        // const num_of_elements = try reader.readInt(u16, .big);
         const num_of_elements = asInt(u16, e_num_of_elements);
         const offset_s_len = num_of_elements * @sizeOf(u16);
         const data_s_len = data.len - offset_s_len - @sizeOf(u16);
@@ -276,20 +270,18 @@ pub const BlockIterator = struct {
         var stream = std.io.fixedBufferStream(self.block.data_v.items[offset..]);
         var reader = stream.reader();
 
-        var buffer: [4096]u8 = undefined;
-        var fba = std.heap.FixedBufferAllocator.init(&buffer);
-        const allocator = fba.allocator();
-
         const overlap_len = try reader.readInt(u16, .big);
         const key_len = try reader.readInt(u16, .big);
-        const kb = try allocator.alloc(u8, key_len);
+        const kb = try self.allocator.alloc(u8, key_len);
+        defer self.allocator.free(kb);
         _ = try reader.read(kb);
         self.key_v.clearAndFree();
         try self.key_v.appendSlice(self.first_key[0..overlap_len]);
         try self.key_v.appendSlice(kb);
 
         const value_len = try reader.readInt(u16, .big);
-        const vb = try allocator.alloc(u8, value_len);
+        const vb = try self.allocator.alloc(u8, value_len);
+        defer self.allocator.free(vb);
         _ = try reader.read(vb);
         self.value_v.clearAndFree();
         try self.value_v.appendSlice(vb);
