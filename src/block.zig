@@ -149,7 +149,7 @@ pub const Block = struct {
     // -----------------------------------------------------------------------
 
     // NOTICE: you have to free returned slice
-    pub fn encode(self: *Block, allocator: std.mem.Allocator) ![]const u8 {
+    pub fn encode(self: Block, allocator: std.mem.Allocator) ![]const u8 {
         var buf = try self.data_v.clone();
         defer buf.deinit();
 
