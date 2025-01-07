@@ -1,11 +1,23 @@
 const std = @import("std");
 const FileObject = @import("FileObject.zig");
 const BloomFilter = @import("bloom_filter/BloomFilter.zig");
-const Block = @import("block.zig").Block;
+const block = @import("block.zig");
 const lru = @import("lru.zig");
+const Block = block.Block;
+const BlockBuilder = block.BlockBuilder;
 const hash = std.hash;
 
-pub const TableMeta = struct {
+pub const SsTableBuilder = struct {
+    allocator: std.mem.Allocator,
+    builder: BlockBuilder,
+    first_key: []const u8,
+    last_key: []const u8,
+    meta: BlockMeta,
+    block_size: usize,
+    key_hashes: []u32,
+};
+
+pub const BlockMeta = struct {
     allocator: std.mem.Allocator,
     offset: usize,
     first_key: []const u8,
@@ -22,8 +34,8 @@ pub const TableMeta = struct {
     pub fn batchDeecode(
         buf: []const u8,
         allocator: std.mem.Allocator,
-    ) ![]TableMeta {
-        var container = std.ArrayList(TableMeta).init(allocator);
+    ) ![]BlockMeta {
+        var container = std.ArrayList(BlockMeta).init(allocator);
         errdefer container.deinit();
         var stream = std.io.fixedBufferStream(buf);
         var reader = stream.reader();
@@ -39,7 +51,7 @@ pub const TableMeta = struct {
             const last_key = try allocator.alloc(u8, last_key_len);
             errdefer allocator.free(last_key);
             _ = try reader.readAll(last_key);
-            try container.append(TableMeta{
+            try container.append(BlockMeta{
                 .allocator = allocator,
                 .offset = offset,
                 .first_key = first_key,
@@ -72,7 +84,7 @@ pub const TableMeta = struct {
             fn doWrite(
                 _buf: *std.ArrayList(u8),
                 _estimated_size: usize,
-                _metas: []const TableMeta,
+                _metas: []const BlockMeta,
             ) !void {
                 const origin_len = _buf.items.len;
                 try _buf.ensureUnusedCapacity(_estimated_size);
@@ -107,7 +119,7 @@ const BlockCache = lru.LruCache(.locking, usize, Block);
 pub const SsTable = struct {
     allocator: std.mem.Allocator,
     file: FileObject,
-    table_metas: []TableMeta,
+    block_metas: []BlockMeta,
     meta_offset: usize,
     block_cache: ?BlockCache,
     bloom: ?BloomFilter,
@@ -123,10 +135,10 @@ pub const SsTable = struct {
     }
 
     pub fn deinit(self: Self) void {
-        for (self.table_metas) |tm| {
+        for (self.block_metas) |tm| {
             tm.deinit();
         }
-        self.allocator.free(self.table_metas);
+        self.allocator.free(self.block_metas);
         self.allocator.free(self.first_key);
         self.allocator.free(self.last_key);
         if (self.bloom) |bf| {
@@ -166,7 +178,7 @@ pub const SsTable = struct {
         const raw_meta = try allocator.alloc(u8, bloom_offset - 4 - meta_offset);
         defer allocator.free(raw_meta);
         _ = try file.read(meta_offset, raw_meta);
-        const tms = try TableMeta.batchDeecode(raw_meta, allocator);
+        const tms = try BlockMeta.batchDeecode(raw_meta, allocator);
         errdefer for (tms) |tm| {
             tm.deinit();
         };
@@ -179,7 +191,7 @@ pub const SsTable = struct {
         return .{
             .allocator = allocator,
             .file = file,
-            .table_metas = tms,
+            .block_metas = tms,
             .meta_offset = meta_offset,
             .block_cache = block_cache,
             .bloom = bloom_filter,
@@ -205,7 +217,7 @@ pub const SsTable = struct {
                 .file = null,
                 .size = file_size,
             },
-            .table_metas = [_]TableMeta{},
+            .block_metas = [_]BlockMeta{},
             .meta_offset = 0,
             .bloom = null,
             .id = id,
@@ -216,11 +228,11 @@ pub const SsTable = struct {
     }
 
     pub fn readBlock(self: Self, block_idx: usize) !Block {
-        std.debug.assert(block_idx < self.table_metas.len);
-        const offset = self.table_metas[block_idx].offset;
+        std.debug.assert(block_idx < self.block_metas.len);
+        const offset = self.block_metas[block_idx].offset;
         var offset_end: usize = 0;
-        if (block_idx + 1 < self.table_metas.len) {
-            offset_end = self.table_metas[block_idx + 1].offset;
+        if (block_idx + 1 < self.block_metas.len) {
+            offset_end = self.block_metas[block_idx + 1].offset;
         } else {
             offset_end = self.meta_offset;
         }
@@ -240,11 +252,11 @@ pub const SsTable = struct {
     pub fn readBlockCached(self: Self, block_idx: usize) !Block {
         if (self.block_cache) |bc| {
             var bcm = bc;
-            if (bcm.get(block_idx)) |block| {
-                return block;
+            if (bcm.get(block_idx)) |b| {
+                return b;
             } else {
-                const block = try self.readBlock(block_idx);
-                try bcm.insert(block_idx, block);
+                const b = try self.readBlock(block_idx);
+                try bcm.insert(block_idx, b);
             }
         }
         return try self.readBlock(block_idx);
@@ -254,11 +266,11 @@ pub const SsTable = struct {
     pub fn findBlockIndex(self: Self, key: []const u8) usize {
         // binary search
         var low = 0;
-        var high = self.table_metas.len - 1;
+        var high = self.block_metas.len - 1;
         while (low <= high) {
             const mid = low + (high - low) / 2;
-            const first_key = self.table_metas[mid].first_key;
-            const last_key = self.table_metas[mid].last_key;
+            const first_key = self.block_metas[mid].first_key;
+            const last_key = self.block_metas[mid].last_key;
             if (std.mem.lessThan(u8, key, first_key)) {
                 high = mid - 1;
             } else if (std.mem.lessThan(u8, last_key, key)) {
@@ -269,7 +281,7 @@ pub const SsTable = struct {
     }
 
     pub fn numBlocks(self: Self) usize {
-        return self.table_metas.len;
+        return self.block_metas.len;
     }
 
     pub fn firstKey(self: Self) []const u8 {
@@ -294,7 +306,7 @@ pub const SsTable = struct {
 };
 
 test "table_meta" {
-    const tms = [_]TableMeta{
+    const tms = [_]BlockMeta{
         .{ .allocator = std.testing.allocator, .offset = 100, .first_key = "abc", .last_key = "def" },
         .{ .allocator = std.testing.allocator, .offset = 200, .first_key = "ghi", .last_key = "jkl" },
         .{ .allocator = std.testing.allocator, .offset = 300, .first_key = "mno", .last_key = "pqr" },
@@ -302,10 +314,10 @@ test "table_meta" {
         .{ .allocator = std.testing.allocator, .offset = 500, .first_key = "yz", .last_key = "ab" },
     };
 
-    const encoded = try TableMeta.batchEncode(tms[0..], std.testing.allocator);
+    const encoded = try BlockMeta.batchEncode(tms[0..], std.testing.allocator);
     defer std.testing.allocator.free(encoded);
 
-    const metas = try TableMeta.batchDeecode(encoded, std.testing.allocator);
+    const metas = try BlockMeta.batchDeecode(encoded, std.testing.allocator);
     defer std.testing.allocator.free(metas);
 
     for (metas) |tm| {
