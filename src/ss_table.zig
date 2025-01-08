@@ -21,7 +21,7 @@ pub const SsTableBuilder = struct {
 
     const Self = @This();
 
-    pub fn init(allocator: std.mem.Allocator, block_size: usize) Self {
+    pub fn init(allocator: std.mem.Allocator, block_size: usize) !Self {
         return .{
             .allocator = allocator,
             .builder = BlockBuilder.init(allocator, block_size),
@@ -30,7 +30,7 @@ pub const SsTableBuilder = struct {
             .meta = std.ArrayList(BlockMeta).init(allocator),
             .block_size = block_size,
             .data = std.ArrayList(u8).init(allocator),
-            .bloom = BloomFilter.init(allocator, block_size / 3, 0.01),
+            .bloom = try BloomFilter.init(allocator, block_size / 3, 0.01),
         };
     }
 
@@ -60,7 +60,7 @@ pub const SsTableBuilder = struct {
         }
         // block is full
         try self.finishBlock();
-        std.debug.assert(self.builder.add(key, value));
+        std.debug.assert(try self.builder.add(key, value));
     }
 
     fn setFirstKey(self: *Self, key: []const u8) !void {
@@ -113,13 +113,17 @@ pub const SsTableBuilder = struct {
         w.writeInt(u32, bloom_offset, .big);
         const file = try FileObject.init(path, self.data.items);
 
+        const bp = self.allocator.create(BloomFilter);
+        errdefer bp.*.deinit();
+        bp.* = try self.bloom.clone(self.allocator);
+
         return .{
             .allocator = self.allocator,
             .file = file,
             .block_metas = self.meta.items,
             .meta_offset = meta_offset,
             .block_cache = block_cache,
-            .bloom = self.bloom,
+            .bloom = bp,
             .id = id,
             .first_key = try self.allocator.dupe(u8, self.first_key.?),
             .last_key = try self.allocator.dupe(u8, self.last_key.?),
@@ -433,5 +437,18 @@ test "table_meta" {
         std.debug.print("{s} {s}\n", .{ tm.first_key, tm.last_key });
         var tmm = tm;
         tmm.deinit();
+    }
+}
+
+test "builder" {
+    var sb = try SsTableBuilder.init(std.testing.allocator, 64);
+    defer sb.deinit();
+
+    for (0..96) |i| {
+        var kb: [64]u8 = undefined;
+        var vb: [64]u8 = undefined;
+        const key = try std.fmt.bufPrint(&kb, "key{:0>5}", .{i});
+        const value = try std.fmt.bufPrint(&vb, "value{:0>5}", .{i});
+        try sb.add(key, value);
     }
 }
