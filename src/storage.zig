@@ -253,7 +253,7 @@ pub const StorageInner = struct {
         const mi = MergeIterators.init(self.allocator, memtable_iters.items);
         errdefer mi.deinit();
 
-        return LsmIterator.init(self.allocator, mi, upper);
+        return LsmIterator.init(mi, upper);
     }
 };
 
