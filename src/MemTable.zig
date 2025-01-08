@@ -186,11 +186,11 @@ pub fn put(self: *Self, key: []const u8, value: []const u8) !void {
     try self.putToList(key, value);
 }
 
-pub fn get(self: *Self, key: []const u8, val: *[]const u8) bool {
+pub fn get(self: *Self, key: []const u8, val: *[]const u8) !bool {
     self.lock.lockShared();
     defer self.lock.unlockShared();
     var vv: []const u8 = undefined;
-    if (self.map.get(key, &vv)) {
+    if (try self.map.get(key, &vv)) {
         val.* = vv;
         return true;
     }
@@ -223,7 +223,7 @@ test "put/get" {
     defer mm.deinit();
     try mm.put("foo", "bar");
     var val: []const u8 = undefined;
-    if (mm.get("foo", &val)) {
+    if (try mm.get("foo", &val)) {
         try std.testing.expectEqualStrings("bar", val);
     } else {
         unreachable;
@@ -247,7 +247,7 @@ test "recover" {
     try mm.recoverFromWal();
 
     var val: []const u8 = undefined;
-    if (mm.get("foo", &val)) {
+    if (try mm.get("foo", &val)) {
         try std.testing.expectEqualStrings("bar", val);
     } else {
         unreachable;

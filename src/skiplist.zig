@@ -213,7 +213,7 @@ pub fn SkipList(comptime Tk: type, comptime Tv: type) type {
             }
         }
 
-        pub fn get(self: Self, key: Tk, value: *Tv) bool {
+        pub fn get(self: Self, key: Tk, value: *Tv) !bool {
             const head = self.head orelse return false;
             if (self.eq(key, head.key)) {
                 if (head.value) |v| value.* = v;
@@ -221,7 +221,7 @@ pub fn SkipList(comptime Tk: type, comptime Tv: type) type {
             }
             if (self.lt(key, head.key)) return false;
 
-            const levels = self.allocator.alloc(*Node, self.levels) catch unreachable;
+            const levels = try self.allocator.alloc(*Node, self.levels);
             defer self.allocator.free(levels);
             const node = self.descend(key, levels);
             if (self.eq(key, node.key)) {
@@ -392,7 +392,7 @@ test "u8" {
     // list.display();
 
     var val: u32 = 0;
-    if (!list.get(2, &val)) {
+    if (!try list.get(2, &val)) {
         unreachable;
     }
 
