@@ -7,14 +7,125 @@ const Block = block.Block;
 const BlockBuilder = block.BlockBuilder;
 const hash = std.hash;
 
+const BlockCache = lru.LruCache(.locking, usize, Block);
+
 pub const SsTableBuilder = struct {
     allocator: std.mem.Allocator,
     builder: BlockBuilder,
-    first_key: []const u8,
-    last_key: []const u8,
-    meta: BlockMeta,
+    first_key: ?[]const u8,
+    last_key: ?[]const u8,
+    meta: std.ArrayList(BlockMeta),
     block_size: usize,
-    key_hashes: []u32,
+    data: std.ArrayList(u8),
+    bloom: BloomFilter,
+
+    const Self = @This();
+
+    pub fn init(allocator: std.mem.Allocator, block_size: usize) Self {
+        return .{
+            .allocator = allocator,
+            .builder = BlockBuilder.init(allocator, block_size),
+            .first_key = null,
+            .last_key = null,
+            .meta = std.ArrayList(BlockMeta).init(allocator),
+            .block_size = block_size,
+            .data = std.ArrayList(u8).init(allocator),
+            .bloom = BloomFilter.init(allocator, block_size / 3, 0.01),
+        };
+    }
+
+    pub fn deinit(self: *Self) void {
+        self.builder.deinit();
+        for (self.meta.items) |meta| {
+            meta.deinit();
+        }
+        self.meta.deinit();
+        self.data.deinit();
+        self.bloom.deinit();
+        if (self.first_key) |first_key| {
+            self.allocator.free(first_key);
+        }
+        if (self.last_key) |last_key| {
+            self.allocator.free(last_key);
+        }
+    }
+
+    pub fn add(self: *Self, key: []const u8, value: []const u8) !void {
+        try self.setFirstKey(key);
+        try self.bloom.insert(key);
+
+        if (try self.builder.add(key, value)) {
+            try self.setLastKey(key);
+            return;
+        }
+        // block is full
+        try self.finishBlock();
+        std.debug.assert(self.builder.add(key, value));
+    }
+
+    fn setFirstKey(self: *Self, key: []const u8) !void {
+        if (self.first_key) |_| {} else {
+            self.first_key = try self.allocator.dupe(u8, key);
+        }
+    }
+
+    fn setLastKey(self: *Self, key: []const u8) !void {
+        if (self.last_key) |l| self.allocator.free(l);
+        self.last_key = try self.allocator.dupe(u8, key);
+    }
+
+    fn finishBlock(self: *Self) !void {
+        var bo = self.builder;
+        defer bo.deinit();
+        self.builder = BlockBuilder.init(self.allocator, self.block_size);
+        const encoded_block = try bo.build().encode(self.allocator);
+        try self.meta.append(.{
+            .allocator = self.allocator,
+            .offset = self.data.items.len,
+            .first_key = try self.allocator.dupe(u8, self.first_key.?),
+            .last_key = try self.allocator.dupe(u8, self.last_key.?),
+        });
+        const cksm = hash.Crc32.hash(encoded_block);
+        try self.data.appendSlice(encoded_block);
+        try self.data.writer().writeInt(u32, cksm, .big);
+    }
+
+    pub fn build(
+        self: *Self,
+        id: usize,
+        block_cache: ?BlockCache,
+        path: []const u8,
+    ) !SsTable {
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+
+        try self.finishBlock();
+        const w = self.data.writer();
+        const meta_offset = self.data.items.len;
+        const meta_b = try BlockMeta.batchEncode(self.meta.items, allocator);
+        try w.write(meta_b);
+        try w.writeInt(u32, @intCast(meta_offset), .big);
+
+        const bloom_offset = self.data.items.len;
+        const encoded_bloom = try self.bloom.encode(allocator);
+        w.write(encoded_bloom);
+        w.writeInt(u32, bloom_offset, .big);
+        const file = try FileObject.init(path, self.data.items);
+
+        return .{
+            .allocator = self.allocator,
+            .file = file,
+            .block_metas = self.meta.items,
+            .meta_offset = meta_offset,
+            .block_cache = block_cache,
+            .bloom = self.bloom,
+            .id = id,
+            .first_key = try self.allocator.dupe(u8, self.first_key.?),
+            .last_key = try self.allocator.dupe(u8, self.last_key.?),
+            .max_ts = 0,
+        };
+    }
 };
 
 pub const BlockMeta = struct {
@@ -113,8 +224,6 @@ pub const BlockMeta = struct {
         return buf.toOwnedSlice();
     }
 };
-
-const BlockCache = lru.LruCache(.locking, usize, Block);
 
 pub const SsTable = struct {
     allocator: std.mem.Allocator,
