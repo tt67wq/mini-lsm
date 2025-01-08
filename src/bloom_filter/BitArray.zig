@@ -32,6 +32,15 @@ pub fn init(allocator: Allocator, num_bits: u64) !Self {
     };
 }
 
+pub fn clone(self: Self, allocator: Allocator) !Self {
+    const bytes = try allocator.dupe(u8, self.bytes);
+    return .{
+        .allocator = allocator,
+        .bytes = bytes,
+        .len = self.len,
+    };
+}
+
 pub fn encode(self: Self, allocator: Allocator) ![]u8 {
     var s = std.ArrayList(u8).init(allocator);
     var writer = s.writer();
@@ -70,7 +79,8 @@ pub fn getBit(self: Self, idx: u64) BitArrayError!u1 {
 /// Set value of bit to 1.
 pub fn setBit(self: *Self, idx: u64) BitArrayError!void {
     try self.isValidBitIdx(idx);
-    self.bytes[byteIdx(idx)] |= @as(u8, 1) << bitOffset(idx);
+    const i = byteIdx(idx);
+    self.bytes[i] |= @as(u8, 1) << bitOffset(idx);
 }
 
 /// Clear value of bit to 0.
@@ -116,11 +126,11 @@ test "get" {
 }
 
 test "set" {
-    var bits = try Self.init(std.testing.allocator, 1000);
+    var bits = try Self.init(std.testing.allocator, 208);
     defer bits.deinit();
 
-    try bits.setBit(200);
-    try expect(1 == try bits.getBit(200));
+    try bits.setBit(168);
+    try expect(1 == try bits.getBit(168));
 }
 
 test "clear" {
