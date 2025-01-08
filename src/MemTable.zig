@@ -114,12 +114,14 @@ pub fn recoverFromWal(self: *Self) !void {
                         else => return err,
                     }
                 };
-                const kbuf = try self.allocator.alloc(u8, klen);
-                defer self.allocator.free(kbuf);
+                var arena = std.heap.ArenaAllocator.init(mm.allocator);
+                defer arena.deinit();
+                const allocator = arena.allocator();
+
+                const kbuf = try allocator.alloc(u8, klen);
                 _ = try reader.read(kbuf);
                 const vlen = try reader.readInt(u32, .big);
-                const vbuf = try self.allocator.alloc(u8, vlen);
-                defer self.allocator.free(vbuf);
+                const vbuf = try allocator.alloc(u8, vlen);
                 _ = try reader.read(vbuf);
 
                 try mm.putToList(kbuf, vbuf);

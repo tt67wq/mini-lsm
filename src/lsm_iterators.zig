@@ -5,18 +5,15 @@ const Bound = @import("MemTable.zig").Bound;
 const LsmIteratorInner = MergeIterators;
 
 pub const LsmIterator = struct {
-    allocator: std.mem.Allocator,
     inner: LsmIteratorInner,
     end_bound: Bound,
     is_empty: bool,
 
     pub fn init(
-        allocator: std.mem.Allocator,
         inner: LsmIteratorInner,
         end_bound: Bound,
     ) LsmIterator {
         return LsmIterator{
-            .allocator = allocator,
             .inner = inner,
             .end_bound = end_bound,
             .is_empty = inner.isEmpty(),
