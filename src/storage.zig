@@ -66,15 +66,15 @@ pub const StorageInner = struct {
     path: []const u8,
     options: StorageOptions,
 
-    pub fn init(allocator: std.mem.Allocator, path: []const u8, options: StorageOptions) Self {
+    pub fn init(allocator: std.mem.Allocator, path: []const u8, options: StorageOptions) !Self {
         var state = StorageState.init(allocator, options);
         const next_sst_id: usize = 0;
 
         // manifest
-        const manifest_path = std.fs.path.join(allocator, &[_][]const u8{
+        const manifest_path = try std.fs.path.join(allocator, &[_][]const u8{
             path,
             "MANIFEST",
-        }) catch unreachable;
+        });
         defer allocator.free(manifest_path);
 
         var manifest_file_exists = true;
@@ -90,7 +90,7 @@ pub const StorageInner = struct {
             if (options.enable_wal) {
                 const wal_path = pathOfWal(allocator, path, next_sst_id);
                 defer allocator.free(wal_path);
-                const new_mm = allocator.create(MemTable) catch unreachable;
+                const new_mm = try allocator.create(MemTable);
                 new_mm.* = MemTable.init(next_sst_id, allocator, wal_path);
                 var old_mm = state.mem_table.swap(new_mm, .seq_cst);
                 old_mm.deinit();
@@ -125,9 +125,9 @@ pub const StorageInner = struct {
         return std.fs.path.joinZ(allocator, &[_][]const u8{ path, ww }) catch unreachable;
     }
 
-    pub fn get(self: *Self, key: []const u8, value: *[]const u8) bool {
+    pub fn get(self: *Self, key: []const u8, value: *[]const u8) !bool {
         // search in memtable
-        if (self.state.getMemTable().get(key, value)) {
+        if (try self.state.getMemTable().get(key, value)) {
             if (value.*.len == 0) {
                 // tomestone
                 return false;
@@ -141,7 +141,7 @@ pub const StorageInner = struct {
             var i = self.state.imm_mem_tables.items.len - 1;
             while (i >= 0) : (i -= 1) {
                 const imm_table = self.state.imm_mem_tables.items[i];
-                if (imm_table.get(key, value)) {
+                if (try imm_table.get(key, value)) {
                     if (value.*.len == 0) {
                         // tomestone
                         return false;
@@ -158,18 +158,12 @@ pub const StorageInner = struct {
         for (records) |record| {
             switch (record) {
                 .put => |pp| {
-                    self.state.getMemTable().put(pp.key, pp.value) catch |err| {
-                        std.log.err("put failed: {s}", .{@errorName(err)});
-                        @panic("put failed");
-                    };
+                    try self.state.getMemTable().put(pp.key, pp.value);
                     try self.tryFreeze(self.state.getMemTable().getApproximateSize());
                 },
                 .delete => |dd| {
                     // we use "" as the tombstone value
-                    self.state.getMemTable().put(dd, "") catch |err| {
-                        std.log.err("delete failed: {s}", .{@errorName(err)});
-                        @panic("delete failed");
-                    };
+                    try self.state.getMemTable().put(dd, "");
                     try self.tryFreeze(self.state.getMemTable().getApproximateSize());
                 },
             }
@@ -266,7 +260,7 @@ test "init" {
         .enable_wal = true,
     };
 
-    var storage = StorageInner.init(std.testing.allocator, "./tmp/test_storage", opts);
+    var storage = try StorageInner.init(std.testing.allocator, "./tmp/test_storage", opts);
     defer storage.deinit();
 }
 
@@ -278,7 +272,7 @@ test "put/delete/get" {
         .num_memtable_limit = 10,
         .enable_wal = true,
     };
-    var storage = StorageInner.init(std.testing.allocator, "./tmp/test_storage", opts);
+    var storage = try StorageInner.init(std.testing.allocator, "./tmp/test_storage", opts);
     defer storage.deinit();
 
     try storage.put("key1", "value1");
@@ -287,17 +281,17 @@ test "put/delete/get" {
     try storage.delete("key3");
 
     var value: []const u8 = undefined;
-    if (storage.get("key1", &value)) {
+    if (try storage.get("key1", &value)) {
         std.debug.print("key1: {s}\n", .{value});
         try std.testing.expectEqualStrings("value1", value);
     }
 
-    if (storage.get("key2", &value)) {
+    if (try storage.get("key2", &value)) {
         std.debug.print("key2: {s}\n", .{value});
         try std.testing.expectEqualStrings("value2", value);
     }
 
-    if (storage.get("key3", &value)) {
+    if (try storage.get("key3", &value)) {
         unreachable;
     }
 }
@@ -310,7 +304,7 @@ test "freeze" {
         .num_memtable_limit = 10,
         .enable_wal = true,
     };
-    var storage = StorageInner.init(std.testing.allocator, "./tmp/test_storage", opts);
+    var storage = try StorageInner.init(std.testing.allocator, "./tmp/test_storage", opts);
     defer storage.deinit();
 
     for (0..160) |i| {
