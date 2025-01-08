@@ -47,21 +47,17 @@ pub const BlockBuilder = struct {
         return i;
     }
 
-    pub fn add(self: *Self, key: []const u8, value: ?[]const u8) bool {
+    pub fn add(self: *Self, key: []const u8, value: ?[]const u8) !bool {
         std.debug.assert(key.len > 0); // key must not be empty
 
         const vSize = if (value) |v| v.len else 0;
         if ((self.estimated_size() + key.len + vSize + 3 * @sizeOf(u16) > self.block_size) and !self.is_empty()) {
             return false;
         }
-        self.doAdd(key, value) catch |err| {
-            std.debug.panic("add {s} error: {any}", .{ key, err });
-        };
+        try self.doAdd(key, value);
 
         if (self.first_key.len == 0) {
-            self.first_key = self.allocator.dupe(u8, key) catch |err| {
-                std.debug.panic("dupe first key {s} error: {any}", .{ key, err });
-            };
+            self.first_key = try self.allocator.dupe(u8, key);
         }
         return true;
     }
@@ -308,11 +304,11 @@ pub const BlockIterator = struct {
 test "block" {
     var bb = BlockBuilder.init(std.testing.allocator, 4096);
     defer bb.deinit();
-    try std.testing.expect(bb.add("foo1", "bar1"));
-    try std.testing.expect(bb.add("foo2", "bar2"));
-    try std.testing.expect(bb.add("foo3", "bar3"));
-    try std.testing.expect(bb.add("foo4", "bar4"));
-    try std.testing.expect(bb.add("foo5", "bar5"));
+    try std.testing.expect(try bb.add("foo1", "bar1"));
+    try std.testing.expect(try bb.add("foo2", "bar2"));
+    try std.testing.expect(try bb.add("foo3", "bar3"));
+    try std.testing.expect(try bb.add("foo4", "bar4"));
+    try std.testing.expect(try bb.add("foo5", "bar5"));
 
     var b = bb.build();
     defer b.deinit();
@@ -336,11 +332,11 @@ test "block" {
 test "block iterator" {
     var bb = BlockBuilder.init(std.testing.allocator, 4096);
     defer bb.deinit();
-    try std.testing.expect(bb.add("foo1", "bar1"));
-    try std.testing.expect(bb.add("foo2", "bar2"));
-    try std.testing.expect(bb.add("foo3", "bar3"));
-    try std.testing.expect(bb.add("foo4", "bar4"));
-    try std.testing.expect(bb.add("foo5", "bar5"));
+    try std.testing.expect(try bb.add("foo1", "bar1"));
+    try std.testing.expect(try bb.add("foo2", "bar2"));
+    try std.testing.expect(try bb.add("foo3", "bar3"));
+    try std.testing.expect(try bb.add("foo4", "bar4"));
+    try std.testing.expect(try bb.add("foo5", "bar5"));
 
     var b = bb.build();
     defer b.deinit();
