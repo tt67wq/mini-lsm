@@ -61,6 +61,15 @@ pub const SsTableBuilder = struct {
         // block is full
         try self.finishBlock();
         std.debug.assert(try self.builder.add(key, value));
+        try self.resetFirstKey(key);
+        try self.setLastKey(key);
+    }
+
+    fn resetFirstKey(self: *Self, key: []const u8) !void {
+        if (self.first_key) |k| {
+            self.allocator.free(k);
+        }
+        self.first_key = try self.allocator.dupe(u8, key);
     }
 
     fn setFirstKey(self: *Self, key: []const u8) !void {
@@ -74,9 +83,12 @@ pub const SsTableBuilder = struct {
         self.last_key = try self.allocator.dupe(u8, key);
     }
 
+    // | encoded_block0 | checksum: 4 | encoded_block1 | checksum: 4 | ...... |
     fn finishBlock(self: *Self) !void {
         var bo = self.builder;
+        // reset block
         defer bo.reset();
+
         self.builder = BlockBuilder.init(self.allocator, self.block_size);
         var blk = try bo.build();
         defer blk.deinit();
@@ -93,6 +105,8 @@ pub const SsTableBuilder = struct {
         try self.data.writer().writeInt(u32, cksm, .big);
     }
 
+    // the tail part of sstable:
+    // |......| block_meta_encoded | meta_offset: 4 | bloom_filter_encoded | bloom_offset: 4 |
     pub fn build(
         self: *Self,
         id: usize,
@@ -120,6 +134,9 @@ pub const SsTableBuilder = struct {
         var bp = try self.bloom.clone(self.allocator);
         errdefer bp.deinit();
 
+        const fk = self.meta.items[0].first_key;
+        const lk = self.meta.getLast().last_key;
+
         return .{
             .allocator = self.allocator,
             .file = file,
@@ -128,8 +145,8 @@ pub const SsTableBuilder = struct {
             .block_cache = block_cache,
             .bloom = bp,
             .id = id,
-            .first_key = try self.allocator.dupe(u8, self.first_key.?),
-            .last_key = try self.allocator.dupe(u8, self.last_key.?),
+            .first_key = try self.allocator.dupe(u8, fk),
+            .last_key = try self.allocator.dupe(u8, lk),
             .max_ts = 0,
         };
     }
@@ -183,6 +200,8 @@ pub const BlockMeta = struct {
         return container.toOwnedSlice();
     }
 
+    // | estimated_size: 4 | meta_size: 4 | m1_offset: 4 |
+    // | m1_first_key_len: 2 | m1_first_key | m1_last_key_len: 2 | m1_last_key | m1_hash: 4|......
     pub fn batchEncode(metas: []const Self, allocator: std.mem.Allocator) ![]u8 {
         var estimated_size: usize = 0;
         estimated_size += @sizeOf(u32);
@@ -246,6 +265,10 @@ pub const SsTable = struct {
 
     const Self = @This();
 
+    const Err = error{
+        NotFound,
+    };
+
     fn asInt(comptime T: type, bytes: []const u8) T {
         return std.mem.readInt(T, bytes[0..@sizeOf(T)], .big);
     }
@@ -268,6 +291,7 @@ pub const SsTable = struct {
         self.allocator.free(self.last_key);
     }
 
+    // | encoded_block0 | checksum: 4 | encoded_block1 | checksum: 4 | ...... | block_meta_encoded | meta_offset: 4 | bloom_filter_encoded | bloom_offset: 4 |
     pub fn open(
         allocator: std.mem.Allocator,
         id: u64,
@@ -289,9 +313,10 @@ pub const SsTable = struct {
         errdefer bloom_filter.deinit();
 
         // read meta
-        var row_meta_offset: [4]u8 = undefined;
-        _ = try file.read(bloom_offset - 4, undefined);
-        const meta_offset: u64 = @intCast(asInt(u32, row_meta_offset[0..]));
+        var raw_meta_offset: [4]u8 = undefined;
+        _ = try file.read(bloom_offset - 4, raw_meta_offset[0..]);
+        const meta_offset: u64 = @intCast(asInt(u32, raw_meta_offset[0..]));
+        std.debug.assert(bloom_offset - 4 - meta_offset > 0);
         const raw_meta = try allocator.alloc(u8, bloom_offset - 4 - meta_offset);
         defer allocator.free(raw_meta);
         _ = try file.read(meta_offset, raw_meta);
@@ -380,21 +405,22 @@ pub const SsTable = struct {
     }
 
     // find the block that may contain the key
-    pub fn findBlockIndex(self: Self, key: []const u8) usize {
+    pub fn findBlockIndex(self: Self, key: []const u8) !usize {
         // binary search
-        var low = 0;
+        var low: usize = 0;
         var high = self.block_metas.len - 1;
         while (low <= high) {
             const mid = low + (high - low) / 2;
             const first_key = self.block_metas[mid].first_key;
             const last_key = self.block_metas[mid].last_key;
+            std.debug.print("mid: {d}, first_key: {s}, last_key: {s}\n", .{ mid, first_key, last_key });
             if (std.mem.lessThan(u8, key, first_key)) {
                 high = mid - 1;
             } else if (std.mem.lessThan(u8, last_key, key)) {
                 low = mid + 1;
             } else return mid;
         }
-        return -1;
+        return Err.NotFound;
     }
 
     pub fn numBlocks(self: Self) usize {
@@ -450,7 +476,7 @@ test "builder" {
             std.debug.panic("delete tmp dir failed", .{});
         };
     }
-    var sb = try SsTableBuilder.init(std.testing.allocator, 64);
+    var sb = try SsTableBuilder.init(std.testing.allocator, 256);
     defer sb.deinit();
 
     for (0..96) |i| {
@@ -463,5 +489,66 @@ test "builder" {
 
     const cache = try BlockCache.init(std.testing.allocator, 1024);
     var tb = try sb.build(1, cache, "./tmp/test.sst");
+    for (tb.block_metas) |tm| {
+        std.debug.print("{s} {s}\n", .{ tm.first_key, tm.last_key });
+    }
     defer tb.deinit();
+}
+
+test "open" {
+    defer {
+        std.fs.cwd().deleteTree("./tmp/test_open.sst") catch {
+            std.debug.panic("delete tmp dir failed", .{});
+        };
+    }
+    var sb = try SsTableBuilder.init(std.testing.allocator, 256);
+    defer sb.deinit();
+
+    for (0..96) |i| {
+        var kb: [64]u8 = undefined;
+        var vb: [64]u8 = undefined;
+        const key = try std.fmt.bufPrint(&kb, "key{:0>5}", .{i});
+        const value = try std.fmt.bufPrint(&vb, "value{:0>5}", .{i});
+        try sb.add(key, value);
+    }
+
+    var t = try sb.build(
+        1,
+        try BlockCache.init(std.testing.allocator, 1024),
+        "./tmp/test_open.sst",
+    );
+    t.deinit();
+
+    const f = try FileObject.open("./tmp/test_open.sst");
+    var tb = try SsTable.open(
+        std.testing.allocator,
+        1,
+        f,
+        try BlockCache.init(std.testing.allocator, 1024),
+    );
+    defer tb.deinit();
+
+    std.debug.print("num blocks: {d}\n", .{tb.numBlocks()});
+    std.debug.print("first key: {s}\n", .{tb.firstKey()});
+    std.debug.print("last key: {s}\n", .{tb.lastKey()});
+    std.debug.print("table size: {d}\n", .{tb.tableSize()});
+
+    std.debug.print("------------ read blocks: ----------\n", .{});
+    const BlockIterator = block.BlockIterator;
+    for (0..tb.numBlocks()) |i| {
+        std.debug.print("------------- block {d} --------------\n", .{i});
+        var b = try tb.readBlock(i);
+        defer b.deinit();
+        var bi = BlockIterator.createAndSeekToFirst(std.testing.allocator, b);
+        defer bi.deinit();
+        while (!bi.isEmpty()) {
+            std.debug.print("key: {s}, value: {s}\n", .{ bi.key(), bi.value() });
+            bi.next();
+        }
+    }
+
+    std.debug.print("------------ find block: ----------\n", .{});
+    try std.testing.expectEqual(try tb.findBlockIndex("key00024"), 2);
+    try std.testing.expectEqual(try tb.findBlockIndex("key00030"), 2);
+    try std.testing.expectEqual(try tb.findBlockIndex("key00035"), 2);
 }
