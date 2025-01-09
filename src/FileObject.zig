@@ -43,7 +43,12 @@ pub fn reader(self: Self) fs.File.Reader {
 }
 
 test "file" {
-    var f = try Self.init("./tmp/test.txt", "hello world");
+    defer {
+        fs.cwd().deleteFile("./tmp/test_f1.txt") catch {
+            std.debug.panic("failed to delete tmp file", .{});
+        };
+    }
+    var f = try Self.init("./tmp/test_f1.txt", "hello world");
     defer f.deinit();
 
     var buf: [11]u8 = undefined;
@@ -51,11 +56,29 @@ test "file" {
     try std.testing.expectEqual(11, sz);
     try std.testing.expectEqualSlices(u8, "hello world", buf[0..]);
 
-    var f2 = try Self.open("./tmp/test.txt");
+    var f2 = try Self.open("./tmp/test_f1.txt");
     defer f2.deinit();
 
     var buf2: [5]u8 = undefined;
     const sz2 = try f2.read(6, buf2[0..]);
     try std.testing.expectEqual(5, sz2);
     try std.testing.expectEqualSlices(u8, "world", buf2[0..]);
+}
+
+test "replicated file" {
+    defer {
+        fs.cwd().deleteFile("./tmp/test_f2.txt") catch {
+            std.debug.panic("failed to delete tmp file", .{});
+        };
+    }
+    var f1 = try Self.init("./tmp/test_f2.txt", "hello world");
+    defer f1.deinit();
+
+    var f2 = try Self.init("./tmp/test_f2.txt", "super star");
+    defer f2.deinit();
+
+    var buf: [10]u8 = undefined;
+    const sz = try f2.read(0, buf[0..]);
+    try std.testing.expectEqual(10, sz);
+    try std.testing.expectEqualSlices(u8, "super star", buf[0..]);
 }
