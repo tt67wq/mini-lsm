@@ -33,6 +33,13 @@ pub const BlockBuilder = struct {
         return @sizeOf(u16) + self.offset_v.items.len * @sizeOf(u16) + self.data_v.items.len;
     }
 
+    pub fn reset(self: *Self) void {
+        self.offset_v.clearAndFree();
+        self.data_v.clearAndFree();
+        if (self.first_key.len > 0) self.allocator.free(self.first_key);
+        self.first_key = "";
+    }
+
     fn calculate_overlap(first_key: []const u8, key: []const u8) usize {
         var i: usize = 0;
         // prefix match
@@ -85,17 +92,13 @@ pub const BlockBuilder = struct {
         }
     }
 
-    pub fn build(self: Self) Block {
+    pub fn build(self: *Self) !Block {
         if (self.is_empty()) {
             @panic("block is empty");
         }
         return Block.init(
-            self.data_v.clone() catch |err| {
-                std.debug.panic("clone data_v error: {any}", .{err});
-            },
-            self.offset_v.clone() catch |err| {
-                std.debug.panic("clone offset_v error: {any}", .{err});
-            },
+            try self.data_v.clone(),
+            try self.offset_v.clone(),
         );
     }
 };
@@ -310,7 +313,7 @@ test "block" {
     try std.testing.expect(try bb.add("foo4", "bar4"));
     try std.testing.expect(try bb.add("foo5", "bar5"));
 
-    var b = bb.build();
+    var b = try bb.build();
     defer b.deinit();
 
     const eb = try b.encode(std.testing.allocator);
@@ -338,7 +341,7 @@ test "block iterator" {
     try std.testing.expect(try bb.add("foo4", "bar4"));
     try std.testing.expect(try bb.add("foo5", "bar5"));
 
-    var b = bb.build();
+    var b = try bb.build();
     defer b.deinit();
 
     var b_it = BlockIterator.createAndSeekToFirst(std.testing.allocator, b);

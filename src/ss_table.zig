@@ -76,9 +76,12 @@ pub const SsTableBuilder = struct {
 
     fn finishBlock(self: *Self) !void {
         var bo = self.builder;
-        defer bo.deinit();
+        defer bo.reset();
         self.builder = BlockBuilder.init(self.allocator, self.block_size);
-        const encoded_block = try bo.build().encode(self.allocator);
+        var blk = try bo.build();
+        defer blk.deinit();
+        const encoded_block = try blk.encode(self.allocator);
+        defer self.allocator.free(encoded_block);
         try self.meta.append(.{
             .allocator = self.allocator,
             .offset = self.data.items.len,
@@ -104,23 +107,23 @@ pub const SsTableBuilder = struct {
         const w = self.data.writer();
         const meta_offset = self.data.items.len;
         const meta_b = try BlockMeta.batchEncode(self.meta.items, allocator);
-        try w.write(meta_b);
+        _ = try w.write(meta_b);
         try w.writeInt(u32, @intCast(meta_offset), .big);
 
         const bloom_offset = self.data.items.len;
         const encoded_bloom = try self.bloom.encode(allocator);
-        w.write(encoded_bloom);
-        w.writeInt(u32, bloom_offset, .big);
+        _ = try w.write(encoded_bloom);
+        try w.writeInt(u32, @intCast(bloom_offset), .big);
         const file = try FileObject.init(path, self.data.items);
+        errdefer file.deinit();
 
-        const bp = self.allocator.create(BloomFilter);
-        errdefer bp.*.deinit();
-        bp.* = try self.bloom.clone(self.allocator);
+        var bp = try self.bloom.clone(self.allocator);
+        errdefer bp.deinit();
 
         return .{
             .allocator = self.allocator,
             .file = file,
-            .block_metas = self.meta.items,
+            .block_metas = try self.meta.toOwnedSlice(),
             .meta_offset = meta_offset,
             .block_cache = block_cache,
             .bloom = bp,
@@ -248,20 +251,21 @@ pub const SsTable = struct {
     }
 
     pub fn deinit(self: Self) void {
+        self.file.deinit();
         for (self.block_metas) |tm| {
             tm.deinit();
         }
         self.allocator.free(self.block_metas);
-        self.allocator.free(self.first_key);
-        self.allocator.free(self.last_key);
-        if (self.bloom) |bf| {
-            var bfm = bf;
-            bfm.deinit();
-        }
         if (self.block_cache) |bc| {
             var bcm = bc;
             bcm.deinit();
         }
+        if (self.bloom) |bf| {
+            var bfm = bf;
+            bfm.deinit();
+        }
+        self.allocator.free(self.first_key);
+        self.allocator.free(self.last_key);
     }
 
     pub fn open(
@@ -441,6 +445,11 @@ test "table_meta" {
 }
 
 test "builder" {
+    defer {
+        std.fs.cwd().deleteTree("./tmp/test.sst") catch {
+            std.debug.panic("delete tmp dir failed", .{});
+        };
+    }
     var sb = try SsTableBuilder.init(std.testing.allocator, 64);
     defer sb.deinit();
 
@@ -451,4 +460,8 @@ test "builder" {
         const value = try std.fmt.bufPrint(&vb, "value{:0>5}", .{i});
         try sb.add(key, value);
     }
+
+    const cache = try BlockCache.init(std.testing.allocator, 1024);
+    var tb = try sb.build(1, cache, "./tmp/test.sst");
+    defer tb.deinit();
 }
