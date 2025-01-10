@@ -41,7 +41,8 @@ lock: RwLock,
 wal: ?Wal,
 id: usize,
 allocator: std.mem.Allocator,
-gabbage: GC,
+arena: std.heap.ArenaAllocator,
+// gabbage: GC,
 approximate_size: atomic.Value(usize) = atomic.Value(usize).init(0),
 
 fn compFunc(a: []const u8, b: []const u8) bool {
@@ -60,6 +61,7 @@ fn equalFunc(a: []const u8, b: []const u8) bool {
 
 pub fn init(id: usize, allocator: std.mem.Allocator, path: ?[]const u8) Self {
     var rng = std.rand.DefaultPrng.init(0);
+    const arena = std.heap.ArenaAllocator.init(allocator);
 
     return Self{
         .map = Map.init(
@@ -71,7 +73,7 @@ pub fn init(id: usize, allocator: std.mem.Allocator, path: ?[]const u8) Self {
         .wal = walInit(path),
         .id = id,
         .allocator = allocator,
-        .gabbage = std.ArrayList([]const u8).init(allocator),
+        .arena = arena,
         .lock = .{},
     };
 }
@@ -91,12 +93,7 @@ pub fn deinit(self: *Self) void {
     if (self.wal) |_| {
         self.wal.?.deinit();
     }
-
-    // free gabbage
-    for (self.gabbage.items) |item| {
-        self.allocator.free(item);
-    }
-    self.gabbage.deinit();
+    self.arena.deinit();
 }
 
 pub fn recoverFromWal(self: *Self) !void {
@@ -114,9 +111,7 @@ pub fn recoverFromWal(self: *Self) !void {
                         else => return err,
                     }
                 };
-                var arena = std.heap.ArenaAllocator.init(mm.allocator);
-                defer arena.deinit();
-                const allocator = arena.allocator();
+                const allocator = mm.arena.allocator();
 
                 const kbuf = try allocator.alloc(u8, klen);
                 _ = try reader.read(kbuf);
@@ -148,31 +143,24 @@ pub fn recoverFromWal(self: *Self) !void {
 }
 
 fn putToList(self: *Self, key: []const u8, value: []const u8) !void {
-    const kk = try self.allocator.dupe(u8, key);
-    errdefer self.allocator.free(kk);
-    const vv = try self.allocator.dupe(u8, value);
-    errdefer self.allocator.free(vv);
+    const kk = try self.arena.allocator().dupe(u8, key);
+    const vv = try self.arena.allocator().dupe(u8, value);
     {
         self.lock.lock();
         defer self.lock.unlock();
         try self.map.insert(kk, vv);
     }
 
-    try self.gabbage.append(kk[0..key.len]);
-    try self.gabbage.append(vv[0..value.len]);
-
     _ = self.approximate_size.fetchAdd(@intCast(key.len + value.len), .monotonic);
 }
 
-fn putToWal(self: Self, key: []const u8, value: []const u8) !void {
+fn putToWal(self: *Self, key: []const u8, value: []const u8) !void {
     // [key-size: 4bytes][key][value-size: 4bytes][value]
 
     if (self.wal) |w| {
-        var buf = std.ArrayList(u8).init(self.allocator);
+        var buf = std.ArrayList(u8).init(self.arena.allocator());
+
         var bw = buf.writer();
-        defer buf.deinit();
-        // try serializeBytes(key, &buf);
-        // try serializeBytes(value, &buf);
         try bw.writeInt(u32, @intCast(key.len), .big);
         _ = try bw.write(key);
         try bw.writeInt(u32, @intCast(value.len), .big);
@@ -221,10 +209,16 @@ test "put/get" {
     defer std.fs.cwd().deleteTree("./tmp/test.mm") catch unreachable;
     var mm = Self.init(0, allocator, "./tmp/test.mm");
     defer mm.deinit();
-    try mm.put("foo", "bar");
+    for (0..1000) |i| {
+        var kb: [64]u8 = undefined;
+        var vb: [64]u8 = undefined;
+        const key = try std.fmt.bufPrint(&kb, "key{:0>5}", .{i});
+        const value = try std.fmt.bufPrint(&vb, "value{:0>5}", .{i});
+        try mm.put(key, value);
+    }
     var val: []const u8 = undefined;
-    if (try mm.get("foo", &val)) {
-        try std.testing.expectEqualStrings("bar", val);
+    if (try mm.get("key00000", &val)) {
+        try std.testing.expectEqualStrings("value00000", val);
     } else {
         unreachable;
     }
