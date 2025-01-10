@@ -273,16 +273,16 @@ pub const SsTable = struct {
         return std.mem.readInt(T, bytes[0..@sizeOf(T)], .big);
     }
 
-    pub fn deinit(self: Self) void {
+    pub fn deinit(self: *Self) void {
         self.file.deinit();
-        for (self.block_metas) |tm| {
-            tm.deinit();
-        }
-        self.allocator.free(self.block_metas);
         if (self.block_cache) |bc| {
             var bcm = bc;
             bcm.deinit();
         }
+        for (self.block_metas) |tm| {
+            tm.deinit();
+        }
+        self.allocator.free(self.block_metas);
         if (self.bloom) |bf| {
             var bfm = bf;
             bfm.deinit();
@@ -350,9 +350,9 @@ pub const SsTable = struct {
         id: u64,
         first_key: []const u8,
         last_key: []const u8,
-    ) Self {
-        const first_key_d = allocator.dupe(u8, first_key) catch unreachable;
-        const last_key_d = allocator.dupe(u8, last_key) catch unreachable;
+    ) !Self {
+        const first_key_d = try allocator.dupe(u8, first_key);
+        const last_key_d = try allocator.dupe(u8, last_key);
         return .{
             .allocator = allocator,
             .file = .{
@@ -391,21 +391,21 @@ pub const SsTable = struct {
         return try Block.decode(self.allocator, block_raw);
     }
 
-    pub fn readBlockCached(self: Self, block_idx: usize) !Block {
-        if (self.block_cache) |bc| {
-            var bcm = bc;
-            if (bcm.get(block_idx)) |b| {
+    pub fn readBlockCached(self: *Self, block_idx: usize) !Block {
+        if (self.block_cache) |_| {
+            if (self.block_cache.?.get(block_idx)) |b| {
                 return b;
             } else {
                 const b = try self.readBlock(block_idx);
-                try bcm.insert(block_idx, b);
+                try self.block_cache.?.insert(block_idx, b);
+                return b;
             }
         }
         return try self.readBlock(block_idx);
     }
 
     // find the block that may contain the key
-    pub fn findBlockIndex(self: Self, key: []const u8) !usize {
+    pub fn findBlockIndex(self: Self, key: []const u8) Err!usize {
         // binary search
         var low: usize = 0;
         var high = self.block_metas.len - 1;
@@ -413,7 +413,7 @@ pub const SsTable = struct {
             const mid = low + (high - low) / 2;
             const first_key = self.block_metas[mid].first_key;
             const last_key = self.block_metas[mid].last_key;
-            std.debug.print("mid: {d}, first_key: {s}, last_key: {s}\n", .{ mid, first_key, last_key });
+            // std.debug.print("mid: {d}, first_key: {s}, last_key: {s}\n", .{ mid, first_key, last_key });
             if (std.mem.lessThan(u8, key, first_key)) {
                 high = mid - 1;
             } else if (std.mem.lessThan(u8, last_key, key)) {
@@ -514,7 +514,7 @@ test "open" {
 
     var t = try sb.build(
         1,
-        try BlockCache.init(std.testing.allocator, 1024),
+        null,
         "./tmp/test_open.sst",
     );
     t.deinit();
@@ -537,7 +537,7 @@ test "open" {
     const BlockIterator = block.BlockIterator;
     for (0..tb.numBlocks()) |i| {
         std.debug.print("------------- block {d} --------------\n", .{i});
-        var b = try tb.readBlock(i);
+        var b = try tb.readBlockCached(i);
         defer b.deinit();
         var bi = BlockIterator.createAndSeekToFirst(std.testing.allocator, b);
         defer bi.deinit();
@@ -551,4 +551,7 @@ test "open" {
     try std.testing.expectEqual(try tb.findBlockIndex("key00024"), 2);
     try std.testing.expectEqual(try tb.findBlockIndex("key00030"), 2);
     try std.testing.expectEqual(try tb.findBlockIndex("key00035"), 2);
+    _ = tb.findBlockIndex("key00099") catch |err| {
+        std.debug.print("error: {s}\n", .{@errorName(err)});
+    };
 }
