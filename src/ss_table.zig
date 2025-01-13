@@ -478,14 +478,14 @@ pub const SsTableIterator = struct {
         return try BlockIterator.createAndSeekToFirst(allocator, blk);
     }
 
-    fn seekToKeyInner(allocator: std.mem.Allocator, table: *SsTable, key: []const u8) !struct {
+    fn seekToKeyInner(allocator: std.mem.Allocator, table: *SsTable, k: []const u8) !struct {
         blk_idx: usize,
         blk_iter: BlockIterator,
     } {
         var blk_idx = try table.findBlockIndex(key);
         var blk = try table.readBlockCached(blk_idx);
         errdefer blk.deinit();
-        var blk_iter = try BlockIterator.createAndSeekToKey(allocator, blk, key);
+        var blk_iter = try BlockIterator.createAndSeekToKey(allocator, blk, k);
         errdefer blk_iter.deinit();
         if (blk_iter.isEmpty()) {
             blk_idx += 1;
@@ -509,8 +509,8 @@ pub const SsTableIterator = struct {
         };
     }
 
-    pub fn createAndSeekToKey(allocator: std.mem.Allocator, table: *SsTable, key: []const u8) !Self {
-        const b = try seekToKeyInner(allocator, table, key);
+    pub fn createAndSeekToKey(allocator: std.mem.Allocator, table: *SsTable, k: []const u8) !Self {
+        const b = try seekToKeyInner(allocator, table, k);
         return .{
             .allocator = allocator,
             .table = table,
@@ -529,14 +529,44 @@ pub const SsTableIterator = struct {
         self.blk_iterator = blk_iter;
     }
 
-    pub fn seekToKey(self: *Self, key: []const u8) !void {
+    pub fn seekToKey(self: *Self, k: []const u8) !void {
         defer {
             self.blk_iterator.block.deinit();
             self.blk_iterator.deinit();
         }
-        const b = try seekToKeyInner(self.allocator, self.table, key);
+        const b = try seekToKeyInner(self.allocator, self.table, k);
         self.blk_idx = b.blk_idx;
         self.blk_iterator = b.blk_iter;
+    }
+
+    pub fn key(self: Self) []const u8 {
+        return self.blk_iterator.key();
+    }
+
+    pub fn value(self: Self) []const u8 {
+        return self.blk_iterator.value();
+    }
+
+    pub fn isEmpty(self: Self) bool {
+        return self.blk_iterator.isEmpty();
+    }
+
+    pub fn next(self: *Self) void {
+        self.blk_iterator.next();
+        if (self.blk_iterator.isEmpty()) {
+            self.blk_idx += 1;
+            if (self.blk_idx < self.table.numBlocks()) {
+                self.blk_iterator.block.deinit();
+                self.blk_iterator.deinit();
+                const blk = self.table.readBlockCached(self.blk_idx) catch {
+                    std.debug.panic("read block failed", .{});
+                };
+                const blk_iter = BlockIterator.createAndSeekToFirst(self.allocator, blk) catch {
+                    std.debug.panic("create block iterator failed", .{});
+                };
+                self.blk_iterator = blk_iter;
+            }
+        }
     }
 };
 
