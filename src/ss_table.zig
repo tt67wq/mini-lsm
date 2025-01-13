@@ -140,6 +140,7 @@ pub const SsTableBuilder = struct {
 
         return .{
             .allocator = self.allocator,
+            .arena = std.heap.ArenaAllocator.init(self.allocator),
             .file = file,
             .block_metas = try self.meta.toOwnedSlice(),
             .meta_offset = meta_offset,
@@ -254,6 +255,7 @@ pub const BlockMeta = struct {
 
 pub const SsTable = struct {
     allocator: std.mem.Allocator,
+    arena: std.heap.ArenaAllocator,
     file: FileObject,
     block_metas: []BlockMeta,
     meta_offset: usize,
@@ -290,6 +292,8 @@ pub const SsTable = struct {
         }
         self.allocator.free(self.first_key);
         self.allocator.free(self.last_key);
+
+        self.arena.deinit();
     }
 
     // | encoded_block0 | checksum: 4 | encoded_block1 | checksum: 4 | ...... | block_meta_encoded | meta_offset: 4 | bloom_filter_encoded | bloom_offset: 4 |
@@ -333,6 +337,7 @@ pub const SsTable = struct {
 
         return .{
             .allocator = allocator,
+            .arena = std.heap.ArenaAllocator.init(allocator),
             .file = file,
             .block_metas = tms,
             .meta_offset = meta_offset,
@@ -395,9 +400,10 @@ pub const SsTable = struct {
     pub fn readBlockCached(self: *Self, block_idx: usize) !Block {
         if (self.block_cache) |_| {
             if (self.block_cache.?.get(block_idx)) |b| {
-                return b;
+                return b.clone(self.allocator);
             } else {
-                const b = try self.readBlock(block_idx);
+                var b = try self.readBlock(block_idx);
+                errdefer b.deinit();
                 try self.block_cache.?.insert(block_idx, b);
                 return b;
             }
@@ -462,13 +468,23 @@ pub const SsTableIterator = struct {
         self.blk_iterator.deinit();
     }
 
-    pub fn createAndSeekToFirst(allocator: std.mem.Allocator, table: *SsTable) !Self {
+    pub fn initAndSeekToFirst(allocator: std.mem.Allocator, table: *SsTable) !Self {
         const blk_iter = try seekToFirstInner(allocator, table);
         return .{
             .allocator = allocator,
             .table = table,
             .blk_iterator = blk_iter,
             .blk_idx = 0,
+        };
+    }
+
+    pub fn initAndSeekToKey(allocator: std.mem.Allocator, table: *SsTable, k: []const u8) !Self {
+        const b = try seekToKeyInner(allocator, table, k);
+        return .{
+            .allocator = allocator,
+            .table = table,
+            .blk_iterator = b.blk_iter,
+            .blk_idx = b.blk_idx,
         };
     }
 
@@ -482,16 +498,19 @@ pub const SsTableIterator = struct {
         blk_idx: usize,
         blk_iter: BlockIterator,
     } {
-        var blk_idx = try table.findBlockIndex(key);
+        var blk_idx = try table.findBlockIndex(k);
         var blk = try table.readBlockCached(blk_idx);
         errdefer blk.deinit();
+        std.debug.print("first key: {s}\n", .{try blk.getFirstKey(allocator)});
         var blk_iter = try BlockIterator.createAndSeekToKey(allocator, blk, k);
         errdefer blk_iter.deinit();
         if (blk_iter.isEmpty()) {
             blk_idx += 1;
             if (blk_idx < table.numBlocks()) {
-                blk.deinit();
-                blk_iter.deinit();
+                {
+                    blk.deinit();
+                    blk_iter.deinit();
+                }
                 var blk2 = try table.readBlockCached(blk_idx);
                 errdefer blk2.deinit();
                 var blk_iter2 = try BlockIterator.createAndSeekToFirst(allocator, blk2);
@@ -509,18 +528,8 @@ pub const SsTableIterator = struct {
         };
     }
 
-    pub fn createAndSeekToKey(allocator: std.mem.Allocator, table: *SsTable, k: []const u8) !Self {
-        const b = try seekToKeyInner(allocator, table, k);
-        return .{
-            .allocator = allocator,
-            .table = table,
-            .blk_iterator = b.blk_iter,
-            .blk_idx = b.blk_idx,
-        };
-    }
-
     pub fn seekToFirst(self: *Self) !void {
-        defer {
+        {
             self.blk_iterator.block.deinit();
             self.blk_iterator.deinit();
         }
@@ -530,7 +539,7 @@ pub const SsTableIterator = struct {
     }
 
     pub fn seekToKey(self: *Self, k: []const u8) !void {
-        defer {
+        {
             self.blk_iterator.block.deinit();
             self.blk_iterator.deinit();
         }
@@ -556,8 +565,10 @@ pub const SsTableIterator = struct {
         if (self.blk_iterator.isEmpty()) {
             self.blk_idx += 1;
             if (self.blk_idx < self.table.numBlocks()) {
-                self.blk_iterator.block.deinit();
-                self.blk_iterator.deinit();
+                {
+                    self.blk_iterator.block.deinit();
+                    self.blk_iterator.deinit();
+                }
                 const blk = self.table.readBlockCached(self.blk_idx) catch {
                     std.debug.panic("read block failed", .{});
                 };
@@ -658,9 +669,9 @@ test "open" {
     std.debug.print("------------ read blocks: ----------\n", .{});
     for (0..tb.numBlocks()) |i| {
         std.debug.print("------------- block {d} --------------\n", .{i});
-        var b = try tb.readBlockCached(i);
+        var b = try tb.readBlock(i);
         defer b.deinit();
-        var bi = BlockIterator.createAndSeekToFirst(std.testing.allocator, b);
+        var bi = try BlockIterator.createAndSeekToFirst(std.testing.allocator, b);
         defer bi.deinit();
         while (!bi.isEmpty()) {
             std.debug.print("key: {s}, value: {s}\n", .{ bi.key(), bi.value() });
@@ -675,4 +686,93 @@ test "open" {
     _ = tb.findBlockIndex("key00099") catch |err| {
         std.debug.print("error: {s}\n", .{@errorName(err)});
     };
+}
+
+test "read block cached" {
+    defer {
+        std.fs.cwd().deleteTree("./tmp/ss_cache.sst") catch {
+            std.debug.panic("delete tmp dir failed", .{});
+        };
+    }
+    var sb = try SsTableBuilder.init(std.testing.allocator, 256);
+    defer sb.deinit();
+
+    for (0..96) |i| {
+        var kb: [64]u8 = undefined;
+        var vb: [64]u8 = undefined;
+        const key = try std.fmt.bufPrint(&kb, "key{:0>5}", .{i});
+        const value = try std.fmt.bufPrint(&vb, "value{:0>5}", .{i});
+        try sb.add(key, value);
+    }
+
+    const cache = try BlockCache.init(std.testing.allocator, 1024);
+    var tb = try sb.build(1, cache, "./tmp/ss_cache.sst");
+    defer tb.deinit();
+
+    var b = try tb.readBlockCached(0);
+    defer b.deinit();
+
+    var bb = try tb.readBlockCached(0);
+    defer bb.deinit();
+
+    var bbb = try tb.readBlockCached(0);
+    defer bbb.deinit();
+
+    const b1 = try b.getFirstKey(std.testing.allocator);
+    defer std.testing.allocator.free(b1);
+    const b2 = try bb.getFirstKey(std.testing.allocator);
+    defer std.testing.allocator.free(b2);
+
+    const b3 = try bbb.getFirstKey(std.testing.allocator);
+    defer std.testing.allocator.free(b3);
+
+    try std.testing.expectEqualStrings(b1, b2);
+    try std.testing.expectEqualStrings(b1, b3);
+}
+
+test "iterator" {
+    defer {
+        std.fs.cwd().deleteTree("./tmp/ss_iter.sst") catch {
+            std.debug.panic("delete tmp dir failed", .{});
+        };
+    }
+    var sb = try SsTableBuilder.init(std.testing.allocator, 256);
+    defer sb.deinit();
+
+    for (0..96) |i| {
+        var kb: [64]u8 = undefined;
+        var vb: [64]u8 = undefined;
+        const key = try std.fmt.bufPrint(&kb, "key{:0>5}", .{i});
+        const value = try std.fmt.bufPrint(&vb, "value{:0>5}", .{i});
+        try sb.add(key, value);
+    }
+
+    const cache = try BlockCache.init(std.testing.allocator, 1024);
+    var tb = try sb.build(1, cache, "./tmp/ss_iter.sst");
+    defer tb.deinit();
+
+    var iter = try SsTableIterator.initAndSeekToFirst(std.testing.allocator, &tb);
+    defer iter.deinit();
+
+    std.debug.print("------------------ iter begin -----------------\n", .{});
+    while (!iter.isEmpty()) {
+        std.debug.print("key: {s}, value: {s}\n", .{ iter.key(), iter.value() });
+        iter.next();
+    }
+    std.debug.print("------------------ iter end -----------------\n", .{});
+
+    try iter.seekToKey("key00080");
+
+    // try std.testing.expectEqualStrings(iter.key(), "key00030");
+    // try std.testing.expectEqualStrings(iter.value(), "value00030");
+
+    // var iter2 = try SsTableIterator.initAndSeekToKey(std.testing.allocator, &tb, "key00030");
+    // defer iter2.deinit();
+
+    // std.debug.print("------------------ iter begin -----------------\n", .{});
+    // while (!iter2.isEmpty()) {
+    //     std.debug.print("key: {s}, value: {s}\n", .{ iter2.key(), iter2.value() });
+    //     iter2.next();
+    // }
+    // std.debug.print("------------------ iter end -----------------\n", .{});
 }
