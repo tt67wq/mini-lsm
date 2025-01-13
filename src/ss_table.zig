@@ -4,6 +4,7 @@ const BloomFilter = @import("bloom_filter/BloomFilter.zig");
 const block = @import("block.zig");
 const lru = @import("lru.zig");
 const Block = block.Block;
+const BlockIterator = block.BlockIterator;
 const BlockBuilder = block.BlockBuilder;
 const hash = std.hash;
 
@@ -448,6 +449,97 @@ pub const SsTable = struct {
     }
 };
 
+pub const SsTableIterator = struct {
+    allocator: std.mem.Allocator,
+    table: *SsTable,
+    blk_iterator: BlockIterator,
+    blk_idx: usize,
+
+    const Self = @This();
+
+    pub fn deinit(self: *Self) void {
+        self.blk_iterator.block.deinit();
+        self.blk_iterator.deinit();
+    }
+
+    pub fn createAndSeekToFirst(allocator: std.mem.Allocator, table: *SsTable) !Self {
+        const blk_iter = try seekToFirstInner(allocator, table);
+        return .{
+            .allocator = allocator,
+            .table = table,
+            .blk_iterator = blk_iter,
+            .blk_idx = 0,
+        };
+    }
+
+    fn seekToFirstInner(allocator: std.mem.Allocator, table: *SsTable) !BlockIterator {
+        var blk = try table.readBlockCached(0);
+        errdefer blk.deinit();
+        return try BlockIterator.createAndSeekToFirst(allocator, blk);
+    }
+
+    fn seekToKeyInner(allocator: std.mem.Allocator, table: *SsTable, key: []const u8) !struct {
+        blk_idx: usize,
+        blk_iter: BlockIterator,
+    } {
+        var blk_idx = try table.findBlockIndex(key);
+        var blk = try table.readBlockCached(blk_idx);
+        errdefer blk.deinit();
+        var blk_iter = try BlockIterator.createAndSeekToKey(allocator, blk, key);
+        errdefer blk_iter.deinit();
+        if (blk_iter.isEmpty()) {
+            blk_idx += 1;
+            if (blk_idx < table.numBlocks()) {
+                blk.deinit();
+                blk_iter.deinit();
+                var blk2 = try table.readBlockCached(blk_idx);
+                errdefer blk2.deinit();
+                var blk_iter2 = try BlockIterator.createAndSeekToFirst(allocator, blk2);
+                errdefer blk_iter2.deinit();
+
+                return .{
+                    .blk_idx = blk_idx,
+                    .blk_iter = blk_iter2,
+                };
+            }
+        }
+        return .{
+            .blk_idx = blk_idx,
+            .blk_iter = blk_iter,
+        };
+    }
+
+    pub fn createAndSeekToKey(allocator: std.mem.Allocator, table: *SsTable, key: []const u8) !Self {
+        const b = try seekToKeyInner(allocator, table, key);
+        return .{
+            .allocator = allocator,
+            .table = table,
+            .blk_iterator = b.blk_iter,
+            .blk_idx = b.blk_idx,
+        };
+    }
+
+    pub fn seekToFirst(self: *Self) !void {
+        defer {
+            self.blk_iterator.block.deinit();
+            self.blk_iterator.deinit();
+        }
+        const blk_iter = try seekToFirstInner(self.allocator, self.table);
+        self.blk_idx = 0;
+        self.blk_iterator = blk_iter;
+    }
+
+    pub fn seekToKey(self: *Self, key: []const u8) !void {
+        defer {
+            self.blk_iterator.block.deinit();
+            self.blk_iterator.deinit();
+        }
+        const b = try seekToKeyInner(self.allocator, self.table, key);
+        self.blk_idx = b.blk_idx;
+        self.blk_iterator = b.blk_iter;
+    }
+};
+
 test "table_meta" {
     const tms = [_]BlockMeta{
         .{ .allocator = std.testing.allocator, .offset = 100, .first_key = "abc", .last_key = "def" },
@@ -534,7 +626,6 @@ test "open" {
     std.debug.print("table size: {d}\n", .{tb.tableSize()});
 
     std.debug.print("------------ read blocks: ----------\n", .{});
-    const BlockIterator = block.BlockIterator;
     for (0..tb.numBlocks()) |i| {
         std.debug.print("------------- block {d} --------------\n", .{i});
         var b = try tb.readBlockCached(i);
