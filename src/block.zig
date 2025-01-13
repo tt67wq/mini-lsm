@@ -200,13 +200,11 @@ pub const BlockIterator = struct {
 
     const Self = @This();
 
-    pub fn init(allocator: std.mem.Allocator, block: Block) Self {
+    pub fn init(allocator: std.mem.Allocator, block: Block) !Self {
         return Self{
             .allocator = allocator,
             .block = block,
-            .first_key = block.getFirstKey(allocator) catch |err| {
-                std.debug.panic("get first key error: {any}", .{err});
-            },
+            .first_key = try block.getFirstKey(allocator),
             .key_v = std.ArrayList(u8).init(allocator),
             .value_v = std.ArrayList(u8).init(allocator),
             .idx = 0,
@@ -219,14 +217,14 @@ pub const BlockIterator = struct {
         self.value_v.deinit();
     }
 
-    pub fn createAndSeekToFirst(allocator: std.mem.Allocator, block: Block) Self {
-        var it = Self.init(allocator, block);
-        it.seekToFirst();
+    pub fn createAndSeekToFirst(allocator: std.mem.Allocator, block: Block) !Self {
+        var it = try Self.init(allocator, block);
+        try it.seekToFirst();
         return it;
     }
 
-    pub fn createAndSeekToKey(allocator: std.mem.Allocator, block: Block, kk: []const u8) Self {
-        var it = Self.init(allocator, block);
+    pub fn createAndSeekToKey(allocator: std.mem.Allocator, block: Block, kk: []const u8) !Self {
+        var it = try Self.init(allocator, block);
         it.seekToKey(kk);
         return it;
     }
@@ -245,23 +243,23 @@ pub const BlockIterator = struct {
 
     pub fn next(self: *Self) void {
         self.idx += 1;
-        self.seekTo(self.idx);
+        self.seekTo(self.idx) catch {
+            std.debug.panic("seekTo {d} failed", .{self.idx});
+        };
     }
 
-    fn seekToFirst(self: *Self) void {
-        self.seekTo(0);
+    fn seekToFirst(self: *Self) !void {
+        try self.seekTo(0);
     }
 
-    fn seekTo(self: *Self, idx: usize) void {
+    fn seekTo(self: *Self, idx: usize) !void {
         if (idx >= self.block.offset_v.items.len) {
             self.key_v.clearAndFree();
             self.value_v.clearAndFree();
             return;
         }
         const offset: usize = @intCast(self.block.offset_v.items[idx]);
-        self.seekToOffset(offset) catch |err| {
-            std.debug.panic("seek to offset {d} error: {any}", .{ offset, err });
-        };
+        try self.seekToOffset(offset);
         self.idx = idx;
     }
 
@@ -286,7 +284,7 @@ pub const BlockIterator = struct {
         try self.value_v.appendSlice(vb);
     }
 
-    fn seekToKey(self: *Self, kk: []const u8) void {
+    fn seekToKey(self: *Self, kk: []const u8) !void {
         var low: usize = 0;
         var high = self.block.offset_v.items.len;
 
@@ -300,7 +298,7 @@ pub const BlockIterator = struct {
                 .eq => return,
             }
         }
-        self.seekTo(low);
+        try self.seekTo(low);
     }
 };
 
@@ -344,10 +342,10 @@ test "block iterator" {
     var b = try bb.build();
     defer b.deinit();
 
-    var b_it = BlockIterator.createAndSeekToFirst(std.testing.allocator, b);
+    var b_it = try BlockIterator.createAndSeekToFirst(std.testing.allocator, b);
     defer b_it.deinit();
 
-    b_it.seekToFirst();
+    try b_it.seekToFirst();
     try std.testing.expectEqualStrings("foo1", b_it.key());
     try std.testing.expectEqualStrings("bar1", b_it.value());
 
