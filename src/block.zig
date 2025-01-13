@@ -188,6 +188,17 @@ pub const Block = struct {
 
         return Block.init(data_v, offset_v);
     }
+
+    pub fn clone(self: Block, allocator: std.mem.Allocator) !Block {
+        var data_v = std.ArrayList(u8).init(allocator);
+        try data_v.writer().writeAll(self.data_v.items);
+        var offset_v = std.ArrayList(u16).init(allocator);
+        try offset_v.appendSlice(self.offset_v.items);
+        return Block.init(
+            data_v,
+            offset_v,
+        );
+    }
 };
 
 pub const BlockIterator = struct {
@@ -293,7 +304,7 @@ pub const BlockIterator = struct {
 
         while (low < high) {
             const mid = low + (high - low) / 2;
-            self.seekTo(mid);
+            try self.seekTo(mid);
             std.debug.assert(!self.isEmpty());
             switch (std.mem.order(u8, self.key(), kk)) {
                 .lt => low = mid + 1,
@@ -355,5 +366,20 @@ test "block iterator" {
     while (!b_it.isEmpty()) {
         std.debug.print("key: {s}, value: {s}\n", .{ b_it.key(), b_it.value() });
         b_it.next();
+    }
+
+    try b_it.seekToKey("foo3");
+
+    try std.testing.expectEqualStrings("foo3", b_it.key());
+    try std.testing.expectEqualStrings("bar3", b_it.value());
+
+    var b_it2 = try BlockIterator.createAndSeekToKey(std.testing.allocator, b, "foo3");
+    defer b_it2.deinit();
+    try std.testing.expectEqualStrings("foo3", b_it2.key());
+    try std.testing.expectEqualStrings("bar3", b_it2.value());
+
+    while (!b_it2.isEmpty()) {
+        std.debug.print("key: {s}, value: {s}\n", .{ b_it2.key(), b_it2.value() });
+        b_it2.next();
     }
 }
