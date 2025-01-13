@@ -284,7 +284,6 @@ pub const BlockIterator = struct {
         defer self.allocator.free(vb);
         _ = try reader.read(vb);
         self.value_v.clearAndFree();
-        // const vw = self.value_v.writer();
         _ = try self.value_v.writer().write(vb);
     }
 
