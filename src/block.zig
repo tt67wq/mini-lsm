@@ -225,7 +225,7 @@ pub const BlockIterator = struct {
 
     pub fn createAndSeekToKey(allocator: std.mem.Allocator, block: Block, kk: []const u8) !Self {
         var it = try Self.init(allocator, block);
-        it.seekToKey(kk);
+        try it.seekToKey(kk);
         return it;
     }
 
@@ -273,15 +273,19 @@ pub const BlockIterator = struct {
         defer self.allocator.free(kb);
         _ = try reader.read(kb);
         self.key_v.clearAndFree();
-        try self.key_v.appendSlice(self.first_key[0..overlap_len]);
-        try self.key_v.appendSlice(kb);
+
+        const kw = self.key_v.writer();
+
+        _ = try kw.write(self.first_key[0..overlap_len]);
+        _ = try kw.write(kb);
 
         const value_len = try reader.readInt(u16, .big);
         const vb = try self.allocator.alloc(u8, value_len);
         defer self.allocator.free(vb);
         _ = try reader.read(vb);
         self.value_v.clearAndFree();
-        try self.value_v.appendSlice(vb);
+        // const vw = self.value_v.writer();
+        _ = try self.value_v.writer().write(vb);
     }
 
     fn seekToKey(self: *Self, kk: []const u8) !void {
