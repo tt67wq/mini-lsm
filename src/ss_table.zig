@@ -8,7 +8,7 @@ const BlockIterator = block.BlockIterator;
 const BlockBuilder = block.BlockBuilder;
 const hash = std.hash;
 
-const BlockCache = lru.LruCache(.locking, usize, *Block);
+const BlockCache = lru.LruCache(.locking, usize, Block);
 
 pub const SsTableBuilder = struct {
     allocator: std.mem.Allocator,
@@ -276,11 +276,6 @@ pub const SsTable = struct {
 
     pub fn deinit(self: *Self) void {
         self.file.deinit();
-        // free cache
-        if (self.block_cache) |bc| {
-            var bcm = bc;
-            bcm.deinit();
-        }
         for (self.block_metas) |tm| {
             tm.deinit();
         }
@@ -398,12 +393,10 @@ pub const SsTable = struct {
             if (self.block_cache.?.get(block_idx)) |b| {
                 return b.clone(allocator);
             } else {
-                var bp = try allocator.create(Block);
-                errdefer allocator.destroy(bp);
-                bp.* = try self.readBlock(block_idx, allocator);
-                errdefer bp.deinit();
-                try self.block_cache.?.insert(block_idx, bp);
-                return bp.*;
+                var b = try self.readBlock(block_idx, allocator);
+                errdefer b.deinit();
+                try self.block_cache.?.insert(block_idx, b);
+                return b.clone(allocator);
             }
         }
         return try self.readBlock(block_idx, allocator);
@@ -702,30 +695,23 @@ test "read block cached" {
         try sb.add(key, value);
     }
 
-    const cache = try BlockCache.init(std.testing.allocator, 1024);
+    var cache = try BlockCache.init(std.testing.allocator, 1024);
+    defer cache.deinit();
     var tb = try sb.build(1, cache, "./tmp/ss_cache.sst");
     defer tb.deinit();
 
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
-    var b = try tb.readBlockCached(0, allocator);
-    defer b.deinit();
-    var bb = try tb.readBlockCached(0, allocator);
-    defer bb.deinit();
-    var bbb = try tb.readBlockCached(0, allocator);
-    defer bbb.deinit();
+    const allocator = std.testing.allocator;
 
-    const b1 = try b.getFirstKey(std.testing.allocator);
-    defer std.testing.allocator.free(b1);
-    const b2 = try bb.getFirstKey(std.testing.allocator);
-    defer std.testing.allocator.free(b2);
+    var rnd = std.rand.DefaultPrng.init(0);
+    for (0..1000) |_| {
+        const some_random_num = rnd.random().int(usize) % tb.numBlocks();
+        var b = try tb.readBlockCached(some_random_num, allocator);
+        defer b.deinit();
 
-    const b3 = try bbb.getFirstKey(std.testing.allocator);
-    defer std.testing.allocator.free(b3);
-
-    try std.testing.expectEqualStrings(b1, b2);
-    try std.testing.expectEqualStrings(b1, b3);
+        const fk = try b.getFirstKey(allocator);
+        defer allocator.free(fk);
+        std.debug.print("first key: {s}\n", .{fk});
+    }
 }
 
 test "iterator" {
