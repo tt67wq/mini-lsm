@@ -132,7 +132,9 @@ pub const SsTableBuilder = struct {
         const file = try FileObject.init(path, self.data.items);
         errdefer file.deinit();
 
-        var bp = try self.bloom.clone(self.allocator);
+        var bp = try self.allocator.create(BloomFilter);
+        errdefer allocator.destroy(bp);
+        bp.* = try self.bloom.clone(self.allocator);
         errdefer bp.deinit();
 
         const fk = self.meta.items[0].first_key;
@@ -258,7 +260,7 @@ pub const SsTable = struct {
     block_metas: []BlockMeta,
     meta_offset: usize,
     block_cache: ?*BlockCache,
-    bloom: ?BloomFilter,
+    bloom: ?*BloomFilter,
     id: u64,
     first_key: []const u8,
     last_key: []const u8,
@@ -276,14 +278,22 @@ pub const SsTable = struct {
 
     pub fn deinit(self: *Self) void {
         self.file.deinit();
-        for (self.block_metas) |tm| {
-            tm.deinit();
+        // free metas
+        {
+            for (self.block_metas) |tm| {
+                tm.deinit();
+            }
+            self.allocator.free(self.block_metas);
         }
-        self.allocator.free(self.block_metas);
-        if (self.bloom) |bf| {
-            var bfm = bf;
-            bfm.deinit();
+
+        // free bloom filter
+        {
+            if (self.bloom) |bf| {
+                bf.deinit();
+                self.allocator.destroy(bf);
+            }
         }
+
         self.allocator.free(self.first_key);
         self.allocator.free(self.last_key);
     }
@@ -306,7 +316,9 @@ pub const SsTable = struct {
         const raw_bloom = try allocator.alloc(u8, len - 4 - bloom_offset);
         defer allocator.free(raw_bloom);
         _ = try file.read(bloom_offset, raw_bloom);
-        var bloom_filter = try BloomFilter.decode(allocator, raw_bloom);
+        var bloom_filter = try allocator.create(BloomFilter);
+        errdefer allocator.destroy(bloom_filter);
+        bloom_filter.* = try BloomFilter.decode(allocator, raw_bloom);
         errdefer bloom_filter.deinit();
 
         // read meta
@@ -423,6 +435,17 @@ pub const SsTable = struct {
 
     pub fn numBlocks(self: Self) usize {
         return self.block_metas.len;
+    }
+
+    pub fn mayContain(self: Self, key: []const u8) !bool {
+        const fk = self.first_key;
+        const lk = self.last_key;
+        if (std.mem.lessThan(u8, key, fk)) return false;
+        if (std.mem.lessThan(u8, lk, key)) return false;
+        if (self.bloom) |bf| {
+            return bf.*.contains(key);
+        }
+        return true;
     }
 
     pub fn firstKey(self: Self) []const u8 {
@@ -626,6 +649,9 @@ test "builder" {
         std.debug.print("{s} {s}\n", .{ tm.first_key, tm.last_key });
     }
     defer tb.deinit();
+
+    try std.testing.expect(try tb.mayContain("key00052"));
+    try std.testing.expect(!try tb.mayContain("key00098"));
 }
 
 test "open" {
@@ -669,7 +695,7 @@ test "open" {
     std.debug.print("------------ read blocks: ----------\n", .{});
     for (0..tb.numBlocks()) |i| {
         std.debug.print("------------- block {d} --------------\n", .{i});
-        var b = try tb.readBlock(i);
+        var b = try tb.readBlock(i, std.testing.allocator);
         defer b.deinit();
         var bi = try BlockIterator.createAndSeekToFirst(std.testing.allocator, b);
         defer bi.deinit();
