@@ -150,6 +150,22 @@ pub fn next(self: *Self) void {
     self.current = self.q.removeOrNull();
 }
 
+pub fn numActiveIterators(self: Self) usize {
+    var s = 0;
+    var it = self.q.iterator();
+    while (true) {
+        if (it.next()) |h| {
+            s += h.ee.numActiveIterators();
+            continue;
+        }
+        break;
+    }
+    if (self.current) |h| {
+        s += h.ee.numActiveIterators();
+    }
+    return s;
+}
+
 test "merge_iterator" {
     const MemTable = @import("MemTable.zig");
     defer std.fs.cwd().deleteTree("./tmp/mm") catch unreachable;
