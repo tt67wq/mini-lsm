@@ -1,13 +1,15 @@
 const std = @import("std");
 const MemTable = @import("memtable.zig");
-const lsm_iterators = @import("lsm_iterators.zig");
 const iterators = @import("iterators.zig");
 const MergeIterators = @import("MergeIterators.zig");
+const ss_table = @import("ss_table.zig");
 const atomic = std.atomic;
 const Bound = MemTable.Bound;
 const MemTableIterator = MemTable.MemTableIterator;
 const StorageIterator = iterators.StorageIterator;
-const LsmIterator = lsm_iterators.LsmIterator;
+const LsmIterator = iterators.LsmIterator;
+const SsTable = ss_table.SsTable;
+const SsTableIterator = ss_table.SsTableIterator;
 
 pub const StorageOptions = struct {
     block_size: usize,
@@ -20,6 +22,8 @@ pub const StorageState = struct {
     allocator: std.mem.Allocator,
     mem_table: atomic.Value(*MemTable),
     imm_mem_tables: std.ArrayList(*MemTable),
+    l0_sstables: std.ArrayList(usize),
+    sstables: std.AutoHashMap(usize, *SsTable),
 
     pub fn init(allocator: std.mem.Allocator, _: StorageOptions) StorageState {
         const mm = allocator.create(MemTable) catch unreachable;
@@ -28,6 +32,8 @@ pub const StorageState = struct {
             .allocator = allocator,
             .mem_table = atomic.Value(*MemTable).init(mm),
             .imm_mem_tables = std.ArrayList(*MemTable).init(allocator),
+            .l0_sstables = std.ArrayList(usize).init(allocator),
+            .sstables = std.AutoHashMap(usize, *SsTable).init(allocator),
         };
     }
 
@@ -35,12 +41,30 @@ pub const StorageState = struct {
         var mm = self.getMemTable();
         mm.deinit();
         self.allocator.destroy(mm);
-        for (self.imm_mem_tables.items) |m| {
-            var imm_table = m;
-            imm_table.deinit();
-            self.allocator.destroy(imm_table);
+        // free imm_mem_tables
+        {
+            for (self.imm_mem_tables.items) |m| {
+                var imm_table = m;
+                imm_table.deinit();
+                self.allocator.destroy(imm_table);
+            }
+            self.imm_mem_tables.deinit();
         }
-        self.imm_mem_tables.deinit();
+
+        self.l0_sstables.deinit();
+
+        // free sstables
+        {
+            var vi = self.sstables.valueIterator();
+            while (true) {
+                if (vi.next()) |e| {
+                    e.*.deinit();
+                } else {
+                    break;
+                }
+            }
+            self.sstables.deinit();
+        }
     }
 
     pub fn getMemTable(self: *StorageState) *MemTable {
@@ -88,7 +112,7 @@ pub const StorageInner = struct {
             unreachable;
         } else {
             if (options.enable_wal) {
-                const wal_path = pathOfWal(allocator, path, next_sst_id);
+                const wal_path = try pathOfWal(allocator, path, next_sst_id);
                 defer allocator.free(wal_path);
                 const new_mm = try allocator.create(MemTable);
                 new_mm.* = MemTable.init(next_sst_id, allocator, wal_path);
@@ -119,10 +143,10 @@ pub const StorageInner = struct {
         allocator: std.mem.Allocator,
         path: []const u8,
         id: usize,
-    ) [:0]u8 {
+    ) ![:0]u8 {
         var buf: [9]u8 = undefined;
-        const ww = std.fmt.bufPrint(&buf, "{d:0>5}.wal", .{id}) catch unreachable;
-        return std.fs.path.joinZ(allocator, &[_][]const u8{ path, ww }) catch unreachable;
+        const ww = try std.fmt.bufPrint(&buf, "{d:0>5}.wal", .{id});
+        return std.fs.path.joinZ(allocator, &[_][]const u8{ path, ww });
     }
 
     pub fn get(self: *Self, key: []const u8, value: *[]const u8) !bool {
@@ -134,7 +158,7 @@ pub const StorageInner = struct {
             }
             return true;
         }
-        // search in imm_memtable
+        // search in imm_memtables
         {
             self.state_lock.lockShared();
             defer self.state_lock.unlockShared();
@@ -148,6 +172,27 @@ pub const StorageInner = struct {
                     }
                     return true;
                 }
+            }
+        }
+
+        // search in l0_sstables
+        {
+            var iters = std.ArrayList(StorageIterator).init(self.allocator);
+            defer iters.deinit();
+            for (self.state.l0_sstables.items) |sst_id| {
+                const sst = self.state.sstables.get(sst_id).?;
+                if (sst.*.mayContain(key)) {
+                    var ss_iter = try SsTableIterator.initAndSeekToKey(self.allocator, sst, key);
+                    errdefer ss_iter.deinit();
+                    try iters.append(.{ .ss_table_iter = ss_iter });
+                }
+            }
+            var l0_iters = try MergeIterators.init(self.allocator, iters.items);
+            defer l0_iters.deinit();
+
+            if (std.mem.eql(u8, l0_iters.key(), key) and l0_iters.value().len > 0) {
+                value.* = l0_iters.value();
+                return true;
             }
         }
 
@@ -193,26 +238,25 @@ pub const StorageInner = struct {
         if (estimate_size < self.options.target_sst_size) {
             return;
         }
-        {
-            self.state_lock.lockShared();
-            errdefer self.state_lock.unlockShared();
-            // double check
-            if (self.state.getMemTable().getApproximateSize() >= self.options.target_sst_size) {
-                self.state_lock.unlockShared();
-                try self.forceFreezeMemtable();
-                return;
-            }
+
+        self.state_lock.lockShared();
+        errdefer self.state_lock.unlockShared();
+        // double check
+        if (self.state.getMemTable().getApproximateSize() >= self.options.target_sst_size) {
             self.state_lock.unlockShared();
+            try self.forceFreezeMemtable();
+            return;
         }
+        self.state_lock.unlockShared();
     }
 
     fn forceFreezeMemtable(self: *Self) !void {
         const next_sst_id = self.get_next_sst_id();
         std.debug.print("freeze memtable {d}\n", .{next_sst_id - 1});
-        const new_mm = self.allocator.create(MemTable) catch unreachable;
+        const new_mm = try self.allocator.create(MemTable);
         errdefer self.allocator.destroy(new_mm);
         if (self.options.enable_wal) {
-            const mm_path = pathOfWal(self.allocator, self.path, next_sst_id);
+            const mm_path = try pathOfWal(self.allocator, self.path, next_sst_id);
             defer self.allocator.free(mm_path);
             new_mm.* = MemTable.init(next_sst_id, self.allocator, mm_path);
         } else {
@@ -230,6 +274,7 @@ pub const StorageInner = struct {
     }
 
     fn scan(self: *Self, lower: Bound, upper: Bound) !LsmIterator {
+        // memtable
         var memtable_iters = std.ArrayList(StorageIterator).init(self.allocator);
         defer memtable_iters.deinit();
         self.state_lock.lockShared();
@@ -246,6 +291,10 @@ pub const StorageInner = struct {
 
         const mi = MergeIterators.init(self.allocator, memtable_iters.items);
         errdefer mi.deinit();
+
+        // l0_sst
+        var sst_iters = std.ArrayList(StorageIterator).init(self.allocator);
+        defer sst_iters.deinit();
 
         return LsmIterator.init(mi, upper);
     }

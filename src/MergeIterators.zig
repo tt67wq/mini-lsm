@@ -59,7 +59,7 @@ allocator: std.mem.Allocator,
 q: IteratorHeap,
 current: ?*HeapWrapper,
 
-pub fn init(allocator: std.mem.Allocator, iters: std.ArrayList(StorageIterator)) Self {
+pub fn init(allocator: std.mem.Allocator, iters: std.ArrayList(StorageIterator)) !Self {
     var q = IteratorHeap.init(allocator, .{});
     if (iters.items.len == 0) {
         return Self{
@@ -72,9 +72,10 @@ pub fn init(allocator: std.mem.Allocator, iters: std.ArrayList(StorageIterator))
     // PS: the last iter has the highest priority
     for (iters.items, 0..) |iter, i| {
         if (!iter.isEmpty()) {
-            const hw = allocator.create(HeapWrapper) catch unreachable;
+            const hw = try allocator.create(HeapWrapper);
+            errdefer allocator.destroy(hw);
             hw.* = HeapWrapper.init(i, iter);
-            q.add(hw) catch unreachable;
+            try q.add(hw);
         }
     }
 
@@ -105,7 +106,7 @@ pub fn key(self: Self) []const u8 {
     return self.current.?.key();
 }
 
-pub fn value(self: Self) ?[]const u8 {
+pub fn value(self: Self) []const u8 {
     return self.current.?.value();
 }
 
@@ -200,7 +201,7 @@ test "merge_iterator" {
     // 1 iter2: a->1, b->2, c->3
     // 0 iter3: e->4
 
-    var mit = Self.init(allocator, iters);
+    var mit = try Self.init(allocator, iters);
     defer mit.deinit();
 
     while (!mit.isEmpty()) {
