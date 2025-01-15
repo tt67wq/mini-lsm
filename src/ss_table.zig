@@ -449,22 +449,29 @@ pub const SsTable = struct {
 pub const SsTableIterator = struct {
     allocator: std.mem.Allocator,
     table: *SsTable,
+    blk: Block,
     blk_iterator: BlockIterator,
     blk_idx: usize,
 
     const Self = @This();
 
     pub fn deinit(self: *Self) void {
-        self.blk_iterator.block.deinit();
+        self.blk.deinit();
+        self.blk_iterator.deinit();
+    }
+
+    pub fn reset(self: *Self) void {
+        self.blk.deinit();
         self.blk_iterator.deinit();
     }
 
     pub fn initAndSeekToFirst(allocator: std.mem.Allocator, table: *SsTable) !Self {
-        const blk_iter = try seekToFirstInner(allocator, table);
+        const s = try seekToFirstInner(allocator, table);
         return .{
             .allocator = allocator,
             .table = table,
-            .blk_iterator = blk_iter,
+            .blk_iterator = s.blk_iter,
+            .blk = s.blk,
             .blk_idx = 0,
         };
     }
@@ -476,16 +483,24 @@ pub const SsTableIterator = struct {
             .table = table,
             .blk_iterator = b.blk_iter,
             .blk_idx = b.blk_idx,
+            .blk = b.blk,
         };
     }
 
-    fn seekToFirstInner(allocator: std.mem.Allocator, table: *SsTable) !BlockIterator {
+    fn seekToFirstInner(allocator: std.mem.Allocator, table: *SsTable) !struct {
+        blk: Block,
+        blk_iter: BlockIterator,
+    } {
         var blk = try table.readBlockCached(0, allocator);
         errdefer blk.deinit();
-        return try BlockIterator.createAndSeekToFirst(allocator, blk);
+        return .{
+            .blk = blk,
+            .blk_iter = try BlockIterator.createAndSeekToFirst(allocator, blk),
+        };
     }
 
     fn seekToKeyInner(allocator: std.mem.Allocator, table: *SsTable, k: []const u8) !struct {
+        blk: Block,
         blk_idx: usize,
         blk_iter: BlockIterator,
     } {
@@ -509,33 +524,31 @@ pub const SsTableIterator = struct {
                 return .{
                     .blk_idx = blk_idx,
                     .blk_iter = blk_iter2,
+                    .blk = blk2,
                 };
             }
         }
         return .{
             .blk_idx = blk_idx,
             .blk_iter = blk_iter,
+            .blk = blk,
         };
     }
 
     pub fn seekToFirst(self: *Self) !void {
-        {
-            self.blk_iterator.block.deinit();
-            self.blk_iterator.deinit();
-        }
-        const blk_iter = try seekToFirstInner(self.allocator, self.table);
+        self.reset();
+        const s = try seekToFirstInner(self.allocator, self.table);
+        self.blk_iterator = s.blk_iter;
+        self.blk = s.blk;
         self.blk_idx = 0;
-        self.blk_iterator = blk_iter;
     }
 
     pub fn seekToKey(self: *Self, k: []const u8) !void {
-        {
-            self.blk_iterator.block.deinit();
-            self.blk_iterator.deinit();
-        }
-        const b = try seekToKeyInner(self.allocator, self.table, k);
-        self.blk_idx = b.blk_idx;
-        self.blk_iterator = b.blk_iter;
+        self.reset();
+        const s = try seekToKeyInner(self.allocator, self.table, k);
+        self.blk_idx = s.blk_idx;
+        self.blk_iterator = s.blk_iter;
+        self.blk = s.blk;
     }
 
     pub fn key(self: Self) []const u8 {
@@ -555,16 +568,14 @@ pub const SsTableIterator = struct {
         if (self.blk_iterator.isEmpty()) {
             self.blk_idx += 1;
             if (self.blk_idx < self.table.numBlocks()) {
-                {
-                    self.blk_iterator.block.deinit();
-                    self.blk_iterator.deinit();
-                }
+                self.reset();
                 const blk = self.table.readBlockCached(self.blk_idx, self.allocator) catch {
                     std.debug.panic("read block failed", .{});
                 };
                 const blk_iter = BlockIterator.createAndSeekToFirst(self.allocator, blk) catch {
                     std.debug.panic("create block iterator failed", .{});
                 };
+                self.blk = blk;
                 self.blk_iterator = blk_iter;
             }
         }
