@@ -23,7 +23,7 @@ const HeapWrapper = struct {
         return self.ee.key();
     }
 
-    pub fn value(self: HeapWrapper) ?[]const u8 {
+    pub fn value(self: HeapWrapper) []const u8 {
         return self.ee.value();
     }
 

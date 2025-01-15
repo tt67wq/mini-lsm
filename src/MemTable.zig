@@ -29,7 +29,7 @@ pub const MemTableIterator = struct {
         return self.iter.key();
     }
 
-    pub fn value(self: MemTableIterator) ?[]const u8 {
+    pub fn value(self: MemTableIterator) []const u8 {
         return self.iter.value();
     }
 };
@@ -261,21 +261,21 @@ test "scan" {
 
     var it = mm.scan(Bound.init("a", .included), Bound.init("d", .excluded));
     while (!it.isEmpty()) {
-        std.debug.print("key: {s}, val: {s}\n", .{ it.key(), it.value().? });
+        std.debug.print("key: {s}, val: {s}\n", .{ it.key(), it.value() });
         it.next();
     }
     std.debug.print("======================\n", .{});
 
     it = mm.scan(Bound.init("c", .excluded), Bound.init("", .unbounded));
     while (!it.isEmpty()) {
-        std.debug.print("key: {s}, val: {s}\n", .{ it.key(), it.value().? });
+        std.debug.print("key: {s}, val: {s}\n", .{ it.key(), it.value() });
         it.next();
     }
     std.debug.print("======================\n", .{});
 
     it = mm.scan(Bound.init("", .unbounded), Bound.init("", .unbounded));
     while (!it.isEmpty()) {
-        std.debug.print("key: {s}, val: {s}\n", .{ it.key(), it.value().? });
+        std.debug.print("key: {s}, val: {s}\n", .{ it.key(), it.value() });
         it.next();
     }
 }
