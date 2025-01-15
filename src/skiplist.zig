@@ -70,8 +70,8 @@ pub fn SkipList(comptime Tk: type, comptime Tv: type) type {
                 return self.current.?.key;
             }
 
-            pub fn value(self: Iterator) ?Tv {
-                return self.current.?.value;
+            pub fn value(self: Iterator) Tv {
+                return self.current.?.value.?;
             }
 
             pub fn next(self: *Iterator) void {
@@ -133,28 +133,6 @@ pub fn SkipList(comptime Tk: type, comptime Tv: type) type {
                     }
                     self.allocator.destroy(current);
 
-                    if (down) |d| {
-                        current = d;
-                        continue;
-                    } else {
-                        break;
-                    }
-                }
-            }
-        }
-
-        pub fn display(self: *Self) void {
-            std.debug.print("SkipList Levels: {d}\n", .{self.levels});
-            if (self.head) |node| {
-                var current = node;
-                while (true) {
-                    std.debug.print("{s} ", .{current.key});
-                    const down = current.down;
-                    while (current.next) |next| {
-                        std.debug.print("{s} ", .{next.key});
-                        current = next;
-                    }
-                    std.debug.print("\n", .{});
                     if (down) |d| {
                         current = d;
                         continue;
@@ -401,7 +379,7 @@ test "u8" {
         lt.Bound.init(32, .excluded),
     );
     while (!iter.isEmpty()) {
-        std.debug.print("k={d} v={d}\n", .{ iter.key(), iter.value().? });
+        std.debug.print("k={d} v={d}\n", .{ iter.key(), iter.value() });
         iter.next();
     }
 }
@@ -436,13 +414,13 @@ test "bytes" {
     var to_free_val: []const u8 = undefined;
     var first = true;
     while (!iter.isEmpty()) {
-        std.debug.print("k={s} v={s}\n", .{ iter.key(), iter.value().? });
+        std.debug.print("k={s} v={s}\n", .{ iter.key(), iter.value() });
         if (!first) {
             allocator.free(to_free_key);
             allocator.free(to_free_val);
         }
         to_free_key = iter.key();
-        to_free_val = iter.value().?;
+        to_free_val = iter.value();
         first = false;
         iter.next();
     }
@@ -466,7 +444,7 @@ test "iterator" {
 
     var it = list.scan(List.Bound.init(10, .included), List.Bound.init(19, .included));
     while (!it.isEmpty()) {
-        std.debug.print("k={d} v={d}\n", .{ it.key(), it.value().? });
+        std.debug.print("k={d} v={d}\n", .{ it.key(), it.value() });
         it.next();
     }
 
@@ -474,7 +452,7 @@ test "iterator" {
 
     it = list.scan(List.Bound.init(10, .excluded), List.Bound.init(19, .included));
     while (!it.isEmpty()) {
-        std.debug.print("k={d} v={d}\n", .{ it.key(), it.value().? });
+        std.debug.print("k={d} v={d}\n", .{ it.key(), it.value() });
         it.next();
     }
 
@@ -482,7 +460,7 @@ test "iterator" {
 
     it = list.scan(List.Bound.init(10, .excluded), List.Bound.init(19, .excluded));
     while (!it.isEmpty()) {
-        std.debug.print("k={d} v={d}\n", .{ it.key(), it.value().? });
+        std.debug.print("k={d} v={d}\n", .{ it.key(), it.value() });
         it.next();
     }
 
@@ -490,7 +468,7 @@ test "iterator" {
 
     it = list.scan(List.Bound.init(5, .excluded), List.Bound.init(10, .included));
     while (!it.isEmpty()) {
-        std.debug.print("k={d} v={d}\n", .{ it.key(), it.value().? });
+        std.debug.print("k={d} v={d}\n", .{ it.key(), it.value() });
         it.next();
     }
 
@@ -498,7 +476,7 @@ test "iterator" {
 
     it = list.scan(List.Bound.init(5, .excluded), List.Bound.init(10, .excluded));
     while (!it.isEmpty()) {
-        std.debug.print("k={d} v={d}\n", .{ it.key(), it.value().? });
+        std.debug.print("k={d} v={d}\n", .{ it.key(), it.value() });
         it.next();
     }
 
@@ -506,7 +484,7 @@ test "iterator" {
 
     it = list.scan(List.Bound.init(19, .excluded), List.Bound.init(20, .included));
     while (!it.isEmpty()) {
-        std.debug.print("k={d} v={d}\n", .{ it.key(), it.value().? });
+        std.debug.print("k={d} v={d}\n", .{ it.key(), it.value() });
         it.next();
     }
 
@@ -514,7 +492,7 @@ test "iterator" {
 
     it = list.scan(List.Bound.init(19, .included), List.Bound.init(20, .included));
     while (!it.isEmpty()) {
-        std.debug.print("k={d} v={d}\n", .{ it.key(), it.value().? });
+        std.debug.print("k={d} v={d}\n", .{ it.key(), it.value() });
         it.next();
     }
 
@@ -522,7 +500,7 @@ test "iterator" {
 
     it = list.scan(List.Bound.init(19, .unbounded), List.Bound.init(18, .included));
     while (!it.isEmpty()) {
-        std.debug.print("k={d} v={d}\n", .{ it.key(), it.value().? });
+        std.debug.print("k={d} v={d}\n", .{ it.key(), it.value() });
         it.next();
     }
 
@@ -530,7 +508,7 @@ test "iterator" {
 
     it = list.scan(List.Bound.init(19, .unbounded), List.Bound.init(18, .unbounded));
     while (!it.isEmpty()) {
-        std.debug.print("k={d} v={d}\n", .{ it.key(), it.value().? });
+        std.debug.print("k={d} v={d}\n", .{ it.key(), it.value() });
         it.next();
     }
 }
