@@ -31,7 +31,7 @@ pub const StorageIterator = union(enum) {
         }
     }
 
-    pub fn value(self: StorageIterator) ?[]const u8 {
+    pub fn value(self: StorageIterator) []const u8 {
         switch (self) {
             inline else => |impl| return impl.value(),
         }
@@ -43,65 +43,6 @@ pub const StorageIterator = union(enum) {
             .lsm_iter => |iter| return iter.numActiveIterators(),
             inline else => return 1,
         }
-    }
-};
-
-const LsmIteratorInner = MergeIterators;
-
-pub const LsmIterator = struct {
-    inner: LsmIteratorInner,
-    end_bound: Bound,
-    is_empty: bool,
-
-    pub fn init(
-        inner: LsmIteratorInner,
-        end_bound: Bound,
-    ) LsmIterator {
-        return LsmIterator{
-            .inner = inner,
-            .end_bound = end_bound,
-            .is_empty = inner.isEmpty(),
-        };
-    }
-
-    pub fn deinit(self: *LsmIterator) void {
-        self.inner.deinit();
-    }
-
-    pub fn isEmpty(self: LsmIterator) bool {
-        return self.is_empty;
-    }
-
-    pub fn key(self: LsmIterator) []const u8 {
-        return self.inner.key();
-    }
-
-    pub fn value(self: LsmIterator) ?[]const u8 {
-        return self.inner.value();
-    }
-
-    pub fn next(self: *LsmIterator) void {
-        self.inner.next();
-        if (self.inner.isEmpty()) {
-            self.is_empty = true;
-            return;
-        }
-        switch (self.end_bound.bound_t) {
-            .unbounded => return,
-            .included => {
-                self.is_empty = std.mem.lessThan(u8, self.key(), self.end_bound.data) or
-                    std.mem.eql(u8, self.key(), self.end_bound.data);
-                return;
-            },
-            .excluded => {
-                self.is_empty = std.mem.lessThan(u8, self.key(), self.end_bound.data);
-                return;
-            },
-        }
-    }
-
-    pub fn numActiveIterators(self: LsmIterator) usize {
-        return self.inner.numActiveIterators();
     }
 };
 
@@ -144,7 +85,7 @@ pub const TwoMergeIterator = struct {
         return self.b.key();
     }
 
-    pub fn value(self: TwoMergeIterator) ?[]const u8 {
+    pub fn value(self: TwoMergeIterator) []const u8 {
         if (self.choose_a) {
             std.debug.assert(!self.a.isEmpty());
             return self.a.value();
@@ -172,5 +113,75 @@ pub const TwoMergeIterator = struct {
 
     pub fn numActiveIterators(self: TwoMergeIterator) usize {
         return self.a.numActiveIterators() + self.b.numActiveIterators();
+    }
+};
+
+const LsmIteratorInner = TwoMergeIterator;
+
+pub const LsmIterator = struct {
+    inner: LsmIteratorInner,
+    end_bound: Bound,
+    is_empty: bool,
+
+    pub fn init(
+        inner: LsmIteratorInner,
+        end_bound: Bound,
+    ) LsmIterator {
+        return LsmIterator{
+            .inner = inner,
+            .end_bound = end_bound,
+            .is_empty = inner.isEmpty(),
+        };
+    }
+
+    pub fn deinit(self: *LsmIterator) void {
+        self.inner.deinit();
+    }
+
+    fn nextInner(self: *LsmIterator) void {
+        self.inner.next();
+        if (self.inner.isEmpty()) {
+            self.is_empty = true;
+            return;
+        }
+        switch (self.end_bound.bound_t) {
+            .unbounded => return,
+            .included => {
+                self.is_empty = std.mem.lessThan(u8, self.key(), self.end_bound.data) or
+                    std.mem.eql(u8, self.key(), self.end_bound.data);
+                return;
+            },
+            .excluded => {
+                self.is_empty = std.mem.lessThan(u8, self.key(), self.end_bound.data);
+                return;
+            },
+        }
+    }
+
+    fn moveToNoneDelete(self: *LsmIterator) void {
+        while (!self.isEmpty() and self.inner.value().len == 0) {
+            self.nextInner();
+        }
+    }
+
+    pub fn next(self: *LsmIterator) void {
+        self.nextInner();
+        self.moveToNoneDelete();
+    }
+
+    pub fn isEmpty(self: LsmIterator) bool {
+        return self.is_empty;
+    }
+
+    pub fn key(self: LsmIterator) []const u8 {
+        return self.inner.key();
+    }
+
+    pub fn value(self: LsmIterator) ?[]const u8 {
+        return self.inner.value();
+    }
+
+    pub fn numActiveIterators(self: LsmIterator) usize {
+        return self.inner.numActiveIterators();
     }
 };
