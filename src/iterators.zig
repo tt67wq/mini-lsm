@@ -8,17 +8,15 @@ const SsTableIterator = ss_table.SsTableIterator;
 
 pub const StorageIterator = union(enum) {
     mem_iter: MemTableIterator,
-    lsm_iter: LsmIterator,
     ss_table_iter: SsTableIterator,
-    merge_iterators: MergeIterators,
-    two_merge_iterators: TwoMergeIterator,
 
     pub fn deinit(self: *StorageIterator) void {
         switch (self.*) {
-            .lsm_iter => |iter| iter.deinit(),
-            .ss_table_iter => |iter| iter.deinit(),
-            .merge_iterators => |iter| iter.deinit(),
-            .two_merge_iterators => |iter| iter.deinit(),
+            .ss_table_iter => |iter| {
+                var ii = iter;
+                ii.deinit();
+            },
+            inline else => {},
         }
     }
 
@@ -30,7 +28,10 @@ pub const StorageIterator = union(enum) {
 
     pub fn next(self: *StorageIterator) void {
         switch (self.*) {
-            inline else => |impl| impl.next(),
+            inline else => |impl| {
+                var ii = impl;
+                ii.next();
+            },
         }
     }
 
@@ -46,12 +47,8 @@ pub const StorageIterator = union(enum) {
         }
     }
 
-    pub fn numActiveIterators(self: StorageIterator) usize {
-        switch (self) {
-            .merge_iterators => |iter| return iter.numActiveIterators(),
-            .lsm_iter => |iter| return iter.numActiveIterators(),
-            inline else => return 1,
-        }
+    pub fn numActiveIterators(_: StorageIterator) usize {
+        return 1;
     }
 };
 

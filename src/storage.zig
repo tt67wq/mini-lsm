@@ -190,7 +190,8 @@ pub const StorageInner = struct {
         var iters = std.ArrayList(StorageIterator).init(self.allocator);
         defer {
             for (iters.items) |iter| {
-                iter.deinit();
+                var ii = iter;
+                ii.deinit();
             }
             iters.deinit();
         }
@@ -199,14 +200,14 @@ pub const StorageInner = struct {
             defer self.state_lock.unlockShared();
             for (self.state.l0_sstables.items) |sst_id| {
                 const sst = self.state.sstables.get(sst_id).?;
-                if (sst.*.mayContain(key)) {
+                if (try sst.*.mayContain(key)) {
                     var ss_iter = try SsTableIterator.initAndSeekToKey(self.allocator, sst, key);
                     errdefer ss_iter.deinit();
                     try iters.append(.{ .ss_table_iter = ss_iter });
                 }
             }
         }
-        var l0_iters = try MergeIterators.init(self.allocator, iters.items);
+        var l0_iters = try MergeIterators.init(self.allocator, iters);
         defer l0_iters.deinit();
 
         if (std.mem.eql(u8, l0_iters.key(), key) and l0_iters.value().len > 0) {
