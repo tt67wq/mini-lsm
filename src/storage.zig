@@ -11,6 +11,8 @@ const LsmIterator = iterators.LsmIterator;
 const TwoMergeIterator = iterators.TwoMergeIterator;
 const SsTable = ss_table.SsTable;
 const SsTableIterator = ss_table.SsTableIterator;
+const SsTableBuilder = ss_table.SsTableBuilder;
+const BlockCache = ss_table.BlockCache;
 
 pub const StorageOptions = struct {
     block_size: usize,
@@ -60,6 +62,7 @@ pub const StorageState = struct {
             while (true) {
                 if (vi.next()) |e| {
                     e.*.deinit();
+                    self.allocator.destroy(e.*);
                 } else {
                     break;
                 }
@@ -90,10 +93,15 @@ pub const StorageInner = struct {
     next_sst_id: atomic.Value(usize),
     path: []const u8,
     options: StorageOptions,
+    block_cache: *BlockCache,
 
     pub fn init(allocator: std.mem.Allocator, path: []const u8, options: StorageOptions) !Self {
         var state = StorageState.init(allocator, options);
         const next_sst_id: usize = 0;
+        // cache
+        const cache = try allocator.create(BlockCache);
+        cache.* = try BlockCache.init(allocator, 1 << 20); // 4G
+        errdefer cache.deinit();
 
         // manifest
         const manifest_path = try std.fs.path.join(allocator, &[_][]const u8{
@@ -129,11 +137,15 @@ pub const StorageInner = struct {
             .state_lock = .{},
             .next_sst_id = atomic.Value(usize).init(next_sst_id + 1),
             .options = options,
+            .block_cache = cache,
         };
     }
 
     pub fn deinit(self: *Self) void {
         self.state.deinit();
+        // free block_cache
+        self.block_cache.deinit();
+        self.allocator.destroy(self.block_cache);
     }
 
     fn get_next_sst_id(self: *Self) usize {
@@ -163,9 +175,7 @@ pub const StorageInner = struct {
         {
             self.state_lock.lockShared();
             defer self.state_lock.unlockShared();
-            var i = self.state.imm_mem_tables.items.len - 1;
-            while (i >= 0) : (i -= 1) {
-                const imm_table = self.state.imm_mem_tables.items[i];
+            for (self.state.imm_mem_tables.items) |imm_table| {
                 if (try imm_table.get(key, value)) {
                     if (value.*.len == 0) {
                         // tomestone
@@ -277,7 +287,7 @@ pub const StorageInner = struct {
             self.state_lock.lock();
             defer self.state_lock.unlock();
             old_mm = self.state.mem_table.swap(new_mm, .seq_cst);
-            try self.state.imm_mem_tables.append(old_mm);
+            try self.state.imm_mem_tables.insert(0, old_mm);
         }
         try old_mm.syncWal();
     }
@@ -385,6 +395,44 @@ pub const StorageInner = struct {
         }
 
         return LsmIterator.init(TwoMergeIterator.init(mi, sst_iters.items), upper);
+    }
+
+    fn pathOfSst(self: Self, sst_id: usize) ![:0]u8 {
+        var buf: [9]u8 = undefined;
+        const ww = try std.fmt.bufPrint(&buf, "{d:0>5}.sst", .{sst_id});
+        return std.fs.path.join(self.allocator, &[_][]const u8{ self.path, ww });
+    }
+
+    pub fn flushNextMemtable(self: *Self) !void {
+        var to_flush_table: *MemTable = undefined;
+        {
+            self.state_lock.lockShared();
+            defer self.state_lock.unlockShared();
+            to_flush_table = self.state.imm_mem_tables.getLast();
+        }
+
+        var builder = try SsTableBuilder.init(self.allocator, self.options.block_size);
+        defer builder.deinit();
+
+        const sst_id = to_flush_table.id;
+        try to_flush_table.flush(&builder);
+
+        const sst = try self.state.allocator.create(SsTable);
+        errdefer self.state.allocator.destroy(sst);
+        sst.* = try builder.build(sst_id, self.block_cache, try self.pathOfSst(sst_id));
+        errdefer sst.deinit();
+
+        // add the flushed table to l0_sstables
+        {
+            self.state_lock.lock();
+            defer self.state_lock.unlock();
+
+            const m = self.state.imm_mem_tables.pop();
+            defer m.deinit();
+            std.debug.assert(m.id == sst_id);
+            try self.state.l0_sstables.insert(0, sst_id);
+            try self.state.sstables.put(sst.id, sst);
+        }
     }
 };
 

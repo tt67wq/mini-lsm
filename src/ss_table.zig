@@ -8,7 +8,7 @@ const BlockIterator = block.BlockIterator;
 const BlockBuilder = block.BlockBuilder;
 const hash = std.hash;
 
-const BlockCache = lru.LruCache(.locking, usize, Block);
+pub const BlockCache = lru.LruCache(.locking, usize, Block);
 
 pub const SsTableBuilder = struct {
     allocator: std.mem.Allocator,
