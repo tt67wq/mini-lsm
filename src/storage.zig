@@ -177,14 +177,16 @@ pub const StorageInner = struct {
         }
 
         // search in l0_sstables
-        {
-            var iters = std.ArrayList(StorageIterator).init(self.allocator);
-            defer {
-                for (iters.items) |iter| {
-                    iter.deinit();
-                }
-                iters.deinit();
+        var iters = std.ArrayList(StorageIterator).init(self.allocator);
+        defer {
+            for (iters.items) |iter| {
+                iter.deinit();
             }
+            iters.deinit();
+        }
+        {
+            self.state_lock.lockShared();
+            defer self.state_lock.unlockShared();
             for (self.state.l0_sstables.items) |sst_id| {
                 const sst = self.state.sstables.get(sst_id).?;
                 if (sst.*.mayContain(key)) {
@@ -193,13 +195,13 @@ pub const StorageInner = struct {
                     try iters.append(.{ .ss_table_iter = ss_iter });
                 }
             }
-            var l0_iters = try MergeIterators.init(self.allocator, iters.items);
-            defer l0_iters.deinit();
+        }
+        var l0_iters = try MergeIterators.init(self.allocator, iters.items);
+        defer l0_iters.deinit();
 
-            if (std.mem.eql(u8, l0_iters.key(), key) and l0_iters.value().len > 0) {
-                value.* = l0_iters.value();
-                return true;
-            }
+        if (std.mem.eql(u8, l0_iters.key(), key) and l0_iters.value().len > 0) {
+            value.* = l0_iters.value();
+            return true;
         }
 
         return false;
@@ -354,6 +356,8 @@ pub const StorageInner = struct {
 
         // collect sst iterators
         {
+            self.state_lock.lockShared();
+            defer self.state_lock.unlockShared();
             for (self.state.l0_sstables.items) |sst_id| {
                 const table = self.state.sstables.get(sst_id).?;
                 if (rangeOverlap(lower, upper, table.firstKey(), table.lastKey())) {
