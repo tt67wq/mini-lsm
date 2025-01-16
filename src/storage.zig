@@ -8,6 +8,7 @@ const Bound = MemTable.Bound;
 const MemTableIterator = MemTable.MemTableIterator;
 const StorageIterator = iterators.StorageIterator;
 const LsmIterator = iterators.LsmIterator;
+const TwoMergeIterator = iterators.TwoMergeIterator;
 const SsTable = ss_table.SsTable;
 const SsTableIterator = ss_table.SsTableIterator;
 
@@ -178,7 +179,12 @@ pub const StorageInner = struct {
         // search in l0_sstables
         {
             var iters = std.ArrayList(StorageIterator).init(self.allocator);
-            defer iters.deinit();
+            defer {
+                for (iters.items) |iter| {
+                    iter.deinit();
+                }
+                iters.deinit();
+            }
             for (self.state.l0_sstables.items) |sst_id| {
                 const sst = self.state.sstables.get(sst_id).?;
                 if (sst.*.mayContain(key)) {
@@ -252,15 +258,16 @@ pub const StorageInner = struct {
 
     fn forceFreezeMemtable(self: *Self) !void {
         const next_sst_id = self.get_next_sst_id();
-        std.debug.print("freeze memtable {d}\n", .{next_sst_id - 1});
         const new_mm = try self.allocator.create(MemTable);
         errdefer self.allocator.destroy(new_mm);
-        if (self.options.enable_wal) {
-            const mm_path = try pathOfWal(self.allocator, self.path, next_sst_id);
-            defer self.allocator.free(mm_path);
-            new_mm.* = MemTable.init(next_sst_id, self.allocator, mm_path);
-        } else {
-            new_mm.* = MemTable.init(next_sst_id, self.allocator, null);
+        {
+            if (self.options.enable_wal) {
+                const mm_path = try pathOfWal(self.allocator, self.path, next_sst_id);
+                defer self.allocator.free(mm_path);
+                new_mm.* = MemTable.init(next_sst_id, self.allocator, mm_path);
+            } else {
+                new_mm.* = MemTable.init(next_sst_id, self.allocator, null);
+            }
         }
         errdefer new_mm.deinit();
         var old_mm: *MemTable = undefined;
@@ -273,30 +280,107 @@ pub const StorageInner = struct {
         try old_mm.syncWal();
     }
 
-    fn scan(self: *Self, lower: Bound, upper: Bound) !LsmIterator {
-        // memtable
+    fn rangeOverlap(
+        user_begin: Bound,
+        user_end: Bound,
+        sst_begin: []const u8,
+        sst_end: []const u8,
+    ) bool {
+        switch (user_end.bound_t) {
+            .excluded => {
+                // user_end.key <= sst_begin
+                // !(user_end.key > sst_begin)
+                if (!std.mem.order(u8, user_end.data, sst_begin) == .gt) {
+                    return false;
+                }
+            },
+            .included => {
+                // user_begin.key < sst_begin
+                if (std.mem.lessThan(u8, user_end.data, sst_begin)) {
+                    return false;
+                }
+            },
+            inline else => {},
+        }
+
+        switch (user_begin.bound_t) {
+            .excluded => {
+                // user_begin.key >= sst_end
+                // !(sst_end.key < user_begin)
+                if (!std.mem.lessThan(u8, sst_end, user_begin.data)) {
+                    return false;
+                }
+            },
+            .included => {
+                // user_begin.key > sst_end
+                if (std.mem.order(u8, user_begin.data, sst_end) == .gt) {
+                    return false;
+                }
+            },
+            inline else => {},
+        }
+        return true;
+    }
+
+    pub fn scan(self: *Self, lower: Bound, upper: Bound) !LsmIterator {
         var memtable_iters = std.ArrayList(StorageIterator).init(self.allocator);
         defer memtable_iters.deinit();
-        self.state_lock.lockShared();
-        errdefer self.state_lock.unlockShared();
-        for (self.state.imm_mem_tables.items) |imm_table| {
+
+        // collect memtable iterators
+        {
+            self.state_lock.lockShared();
+            defer self.state_lock.unlockShared();
+            for (self.state.imm_mem_tables.items) |imm_table| {
+                try memtable_iters.append(
+                    .{ .mem_iter = imm_table.scan(lower, upper) },
+                );
+            }
             try memtable_iters.append(
-                .{ .mem_iter = imm_table.scan(lower, upper) },
+                .{ .mem_iter = self.state.getMemTable().scan(lower, upper) },
             );
         }
-        try memtable_iters.append(
-            .{ .mem_iter = self.state.getMemTable().scan(lower, upper) },
-        );
-        self.state_lock.unlockShared();
 
-        const mi = MergeIterators.init(self.allocator, memtable_iters.items);
+        const mi = try MergeIterators.init(self.allocator, memtable_iters.items);
         errdefer mi.deinit();
 
         // l0_sst
         var sst_iters = std.ArrayList(StorageIterator).init(self.allocator);
-        defer sst_iters.deinit();
+        defer {
+            for (sst_iters.items) |iter| {
+                iter.deinit();
+            }
+            sst_iters.deinit();
+        }
 
-        return LsmIterator.init(mi, upper);
+        // collect sst iterators
+        {
+            for (self.state.l0_sstables.items) |sst_id| {
+                const table = self.state.sstables.get(sst_id).?;
+                if (rangeOverlap(lower, upper, table.firstKey(), table.lastKey())) {
+                    var ss_iter: SsTableIterator = undefined;
+                    switch (lower.bound_t) {
+                        .included => {
+                            ss_iter = try SsTableIterator.initAndSeekToKey(self.allocator, table, lower.data);
+                            errdefer ss_iter.deinit();
+                        },
+                        .excluded => {
+                            ss_iter = try SsTableIterator.initAndSeekToKey(self.allocator, table, lower.data);
+                            errdefer ss_iter.deinit();
+                            if (!ss_iter.isEmpty() and std.mem.eql(u8, ss_iter.key(), lower.data)) {
+                                ss_iter.next();
+                            }
+                        },
+                        .unbounded => {
+                            ss_iter = try SsTableIterator.initAndSeekToFirst(self.allocator, table);
+                            errdefer ss_iter.deinit();
+                        },
+                    }
+                    try sst_iters.append(.{ .ss_table_iter = ss_iter });
+                }
+            }
+        }
+
+        return LsmIterator.init(TwoMergeIterator.init(mi, sst_iters.items), upper);
     }
 };
 
