@@ -13,6 +13,15 @@ pub const StorageIterator = union(enum) {
     merge_iterators: MergeIterators,
     two_merge_iterators: TwoMergeIterator,
 
+    pub fn deinit(self: *StorageIterator) void {
+        switch (self.*) {
+            .lsm_iter => |iter| iter.deinit(),
+            .ss_table_iter => |iter| iter.deinit(),
+            .merge_iterators => |iter| iter.deinit(),
+            .two_merge_iterators => |iter| iter.deinit(),
+        }
+    }
+
     pub fn isEmpty(self: StorageIterator) bool {
         switch (self) {
             inline else => |impl| return impl.isEmpty(),
@@ -75,6 +84,8 @@ pub const TwoMergeIterator = struct {
         iter.choose_a = chooseA(a, b);
         return iter;
     }
+
+    fn deinit(_: *TwoMergeIterator) void {}
 
     pub fn key(self: TwoMergeIterator) []const u8 {
         if (self.choose_a) {
@@ -145,17 +156,16 @@ pub const LsmIterator = struct {
             return;
         }
         switch (self.end_bound.bound_t) {
-            .unbounded => return,
+            .unbounded => {},
             .included => {
                 self.is_empty = std.mem.lessThan(u8, self.key(), self.end_bound.data) or
                     std.mem.eql(u8, self.key(), self.end_bound.data);
-                return;
             },
             .excluded => {
                 self.is_empty = std.mem.lessThan(u8, self.key(), self.end_bound.data);
-                return;
             },
         }
+        return;
     }
 
     fn moveToNoneDelete(self: *LsmIterator) void {
