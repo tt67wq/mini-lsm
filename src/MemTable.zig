@@ -1,8 +1,10 @@
 const std = @import("std");
-const atomic = std.atomic;
 const skiplist = @import("skiplist.zig");
 const Wal = @import("Wal.zig");
+const ss_table = @import("ss_table.zig");
+const atomic = std.atomic;
 const RwLock = std.Thread.RwLock;
+const SsTableBuilder = ss_table.SsTableBuilder;
 
 const Self = @This();
 const Map = skiplist.SkipList([]const u8, []const u8);
@@ -202,6 +204,14 @@ pub fn getApproximateSize(self: Self) usize {
 // get a iterator over range (lower_bound, upper_bound)
 pub fn scan(self: *Self, lower_bound: Bound, upper_bound: Bound) MemTableIterator {
     return MemTableIterator.init(self.map.scan(lower_bound, upper_bound));
+}
+
+pub fn flush(self: Self, builder: *SsTableBuilder) !void {
+    var it = self.map.scan(Bound.init("", .unbounded), Bound.init("", .unbounded));
+    while (!it.isEmpty()) {
+        try builder.add(it.key(), it.value());
+        it.next();
+    }
 }
 
 test "put/get" {
