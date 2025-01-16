@@ -205,7 +205,7 @@ test "merge_iterator" {
     defer mit.deinit();
 
     while (!mit.isEmpty()) {
-        std.debug.print("key: {s}, value: {s}\n", .{ mit.key(), mit.value().? });
+        std.debug.print("key: {s}, value: {s}\n", .{ mit.key(), mit.value() });
         mit.next();
     }
 }
