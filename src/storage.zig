@@ -306,7 +306,7 @@ pub const StorageInner = struct {
             .excluded => {
                 // user_end.key <= sst_begin
                 // !(user_end.key > sst_begin)
-                if (!std.mem.order(u8, user_end.data, sst_begin) == .gt) {
+                if (!(std.mem.order(u8, user_end.data, sst_begin) == .gt)) {
                     return false;
                 }
             },
@@ -356,8 +356,8 @@ pub const StorageInner = struct {
             );
         }
 
-        var mi = try MergeIterators.init(self.allocator, memtable_iters);
-        errdefer mi.deinit();
+        var m1 = try MergeIterators.init(self.allocator, memtable_iters);
+        errdefer m1.deinit();
 
         // l0_sst
         var sst_iters = std.ArrayList(StorageIterator).init(self.allocator);
@@ -399,7 +399,16 @@ pub const StorageInner = struct {
             }
         }
 
-        return LsmIterator.init(TwoMergeIterator.init(mi, sst_iters.items), upper);
+        var m2 = try MergeIterators.init(self.allocator, sst_iters);
+        errdefer m2.deinit();
+
+        return LsmIterator.init(
+            TwoMergeIterator.init(
+                StorageIterator{ .merge_iter = m1 },
+                StorageIterator{ .merge_iter = m2 },
+            ),
+            upper,
+        );
     }
 
     fn pathOfSst(self: Self, sst_id: usize) ![]u8 {
