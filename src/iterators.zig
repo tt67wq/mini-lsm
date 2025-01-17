@@ -12,10 +12,7 @@ pub const StorageIterator = union(enum) {
 
     pub fn deinit(self: *StorageIterator) void {
         switch (self.*) {
-            .ss_table_iter => |iter| {
-                var ii = iter;
-                ii.deinit();
-            },
+            .ss_table_iter => self.ss_table_iter.deinit(),
             inline else => {},
         }
     }
@@ -28,10 +25,8 @@ pub const StorageIterator = union(enum) {
 
     pub fn next(self: *StorageIterator) void {
         switch (self.*) {
-            inline else => |impl| {
-                var ii = impl;
-                ii.next();
-            },
+            .mem_iter => self.mem_iter.next(),
+            .ss_table_iter => self.ss_table_iter.next(),
         }
     }
 
