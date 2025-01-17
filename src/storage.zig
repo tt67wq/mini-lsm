@@ -361,13 +361,7 @@ pub const StorageInner = struct {
 
         // l0_sst
         var sst_iters = std.ArrayList(StorageIterator).init(self.allocator);
-        defer {
-            for (sst_iters.items) |i| {
-                var ii = i;
-                ii.deinit();
-            }
-            sst_iters.deinit();
-        }
+        defer sst_iters.deinit();
 
         // collect sst iterators
         {
