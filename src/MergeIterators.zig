@@ -11,6 +11,10 @@ const HeapWrapper = struct {
         return HeapWrapper{ .id = id, .ee = ee };
     }
 
+    pub fn deinit(self: *HeapWrapper) void {
+        self.ee.deinit();
+    }
+
     pub fn isEmpty(self: HeapWrapper) bool {
         return self.ee.isEmpty();
     }
@@ -89,11 +93,13 @@ pub fn init(allocator: std.mem.Allocator, iters: std.ArrayList(StorageIterator))
 
 pub fn deinit(self: *Self) void {
     if (self.current) |cc| {
+        cc.deinit();
         self.allocator.destroy(cc);
     }
     var it = self.q.iterator();
     while (true) {
         if (it.next()) |h| {
+            h.deinit();
             self.allocator.destroy(h);
         } else {
             break;
@@ -126,6 +132,7 @@ pub fn next(self: *Self) void {
                 ii.next();
                 if (ii.isEmpty()) {
                     _ = self.q.remove();
+                    ii.deinit();
                     self.allocator.destroy(ii);
                 }
             } else {
@@ -138,7 +145,10 @@ pub fn next(self: *Self) void {
     cc.next();
 
     if (cc.isEmpty()) {
-        defer self.allocator.destroy(cc);
+        defer {
+            cc.deinit();
+            self.allocator.destroy(cc);
+        }
         if (self.q.removeOrNull()) |h| {
             self.current = h;
         } else {
