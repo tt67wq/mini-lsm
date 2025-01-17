@@ -66,7 +66,7 @@ pub const TwoMergeIterator = struct {
         if (!self.a.isEmpty() and !self.b.isEmpty() and std.mem.eql(u8, self.a.key(), self.b.key())) self.b.next();
     }
 
-    fn init(a: StorageIterator, b: StorageIterator) TwoMergeIterator {
+    pub fn init(a: StorageIterator, b: StorageIterator) TwoMergeIterator {
         var iter = TwoMergeIterator{
             .a = a,
             .b = b,
