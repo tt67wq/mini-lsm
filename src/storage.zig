@@ -438,7 +438,7 @@ pub const StorageInner = struct {
 };
 
 test "init" {
-    defer std.fs.cwd().deleteTree("./tmp/test_storage") catch unreachable;
+    defer std.fs.cwd().deleteTree("./tmp/storage/init") catch unreachable;
     const opts = StorageOptions{
         .block_size = 1024,
         .target_sst_size = 1024,
@@ -446,19 +446,19 @@ test "init" {
         .enable_wal = true,
     };
 
-    var storage = try StorageInner.init(std.testing.allocator, "./tmp/test_storage", opts);
+    var storage = try StorageInner.init(std.testing.allocator, "./tmp/storage/init", opts);
     defer storage.deinit();
 }
 
 test "put/delete/get" {
-    defer std.fs.cwd().deleteTree("./tmp/test_storage") catch unreachable;
+    defer std.fs.cwd().deleteTree("./tmp/storage/put") catch unreachable;
     const opts = StorageOptions{
         .block_size = 1024,
         .target_sst_size = 1024,
         .num_memtable_limit = 10,
         .enable_wal = true,
     };
-    var storage = try StorageInner.init(std.testing.allocator, "./tmp/test_storage", opts);
+    var storage = try StorageInner.init(std.testing.allocator, "./tmp/storage/put", opts);
     defer storage.deinit();
 
     try storage.put("key1", "value1");
@@ -483,14 +483,14 @@ test "put/delete/get" {
 }
 
 test "freeze" {
-    defer std.fs.cwd().deleteTree("./tmp/test_storage") catch unreachable;
+    defer std.fs.cwd().deleteTree("./tmp/storage/freeze") catch unreachable;
     const opts = StorageOptions{
         .block_size = 1024,
         .target_sst_size = 1024,
         .num_memtable_limit = 10,
         .enable_wal = true,
     };
-    var storage = try StorageInner.init(std.testing.allocator, "./tmp/test_storage", opts);
+    var storage = try StorageInner.init(std.testing.allocator, "./tmp/storage/freeze", opts);
     defer storage.deinit();
 
     for (0..160) |i| {
@@ -504,3 +504,5 @@ test "freeze" {
 
     try std.testing.expectEqual(storage.state.imm_mem_tables.items.len, 2);
 }
+
+test "flush" {}
