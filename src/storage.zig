@@ -1,5 +1,5 @@
 const std = @import("std");
-const MemTable = @import("memtable.zig");
+const MemTable = @import("MemTable.zig");
 const iterators = @import("iterators.zig");
 const MergeIterators = @import("MergeIterators.zig");
 const ss_table = @import("ss_table.zig");
@@ -41,9 +41,12 @@ pub const StorageState = struct {
     }
 
     pub fn deinit(self: *StorageState) void {
-        var mm = self.getMemTable();
-        mm.deinit();
-        self.allocator.destroy(mm);
+        // free mem_table
+        {
+            var mm = self.getMemTable();
+            mm.deinit();
+            self.allocator.destroy(mm);
+        }
         // free imm_mem_tables
         {
             for (self.imm_mem_tables.items) |m| {
@@ -353,14 +356,15 @@ pub const StorageInner = struct {
             );
         }
 
-        const mi = try MergeIterators.init(self.allocator, memtable_iters.items);
+        var mi = try MergeIterators.init(self.allocator, memtable_iters);
         errdefer mi.deinit();
 
         // l0_sst
         var sst_iters = std.ArrayList(StorageIterator).init(self.allocator);
         defer {
-            for (sst_iters.items) |iter| {
-                iter.deinit();
+            for (sst_iters.items) |i| {
+                var ii = i;
+                ii.deinit();
             }
             sst_iters.deinit();
         }
@@ -398,13 +402,14 @@ pub const StorageInner = struct {
         return LsmIterator.init(TwoMergeIterator.init(mi, sst_iters.items), upper);
     }
 
-    fn pathOfSst(self: Self, sst_id: usize) ![:0]u8 {
+    fn pathOfSst(self: Self, sst_id: usize) ![]u8 {
         var buf: [9]u8 = undefined;
         const ww = try std.fmt.bufPrint(&buf, "{d:0>5}.sst", .{sst_id});
         return std.fs.path.join(self.allocator, &[_][]const u8{ self.path, ww });
     }
 
     pub fn flushNextMemtable(self: *Self) !void {
+        std.debug.assert(self.state.imm_mem_tables.items.len > 0);
         var to_flush_table: *MemTable = undefined;
         {
             self.state_lock.lockShared();
@@ -420,7 +425,9 @@ pub const StorageInner = struct {
 
         const sst = try self.state.allocator.create(SsTable);
         errdefer self.state.allocator.destroy(sst);
-        sst.* = try builder.build(sst_id, self.block_cache, try self.pathOfSst(sst_id));
+        const sst_path = try self.pathOfSst(sst_id);
+        defer self.allocator.free(sst_path);
+        sst.* = try builder.build(sst_id, self.block_cache, sst_path);
         errdefer sst.deinit();
 
         // add the flushed table to l0_sstables
@@ -429,7 +436,10 @@ pub const StorageInner = struct {
             defer self.state_lock.unlock();
 
             const m = self.state.imm_mem_tables.pop();
-            defer m.deinit();
+            defer {
+                m.deinit();
+                self.allocator.destroy(m);
+            }
             std.debug.assert(m.id == sst_id);
             try self.state.l0_sstables.insert(0, sst_id);
             try self.state.sstables.put(sst.id, sst);
@@ -505,4 +515,64 @@ test "freeze" {
     try std.testing.expectEqual(storage.state.imm_mem_tables.items.len, 2);
 }
 
-test "flush" {}
+test "flush" {
+    defer std.fs.cwd().deleteTree("./tmp/storage/flush") catch unreachable;
+    const opts = StorageOptions{
+        .block_size = 1024,
+        .target_sst_size = 1024,
+        .num_memtable_limit = 10,
+        .enable_wal = true,
+    };
+
+    var storage = try StorageInner.init(std.testing.allocator, "./tmp/storage/flush", opts);
+    defer storage.deinit();
+
+    for (0..256) |i| {
+        var kb: [10]u8 = undefined;
+        var vb: [10]u8 = undefined;
+        const kk = try std.fmt.bufPrint(&kb, "key{d:0>5}", .{i});
+        const vv = try std.fmt.bufPrint(&vb, "val{d:0>5}", .{i});
+        try storage.put(kk, vv);
+    }
+
+    const l1 = storage.state.imm_mem_tables.items.len;
+
+    try storage.flushNextMemtable();
+    const l2 = storage.state.imm_mem_tables.items.len;
+
+    try std.testing.expectEqual(l1, l2 + 1);
+    try std.testing.expectEqual(storage.state.l0_sstables.items.len, 1);
+}
+
+test "scan" {
+    defer std.fs.cwd().deleteTree("./tmp/storage/scan") catch unreachable;
+    const opts = StorageOptions{
+        .block_size = 1024,
+        .target_sst_size = 1024,
+        .num_memtable_limit = 10,
+        .enable_wal = true,
+    };
+    var storage = try StorageInner.init(std.testing.allocator, "./tmp/storage/scan", opts);
+    defer storage.deinit();
+
+    for (0..256) |i| {
+        var kb: [10]u8 = undefined;
+        var vb: [10]u8 = undefined;
+        const kk = try std.fmt.bufPrint(&kb, "key{d:0>5}", .{i});
+        const vv = try std.fmt.bufPrint(&vb, "val{d:0>5}", .{i});
+        try storage.put(kk, vv);
+    }
+
+    try storage.flushNextMemtable();
+
+    var iter = try storage.scan(
+        Bound.init("", .unbounded),
+        Bound.init("", .unbounded),
+    );
+    defer iter.deinit();
+
+    while (!iter.isEmpty()) {
+        std.debug.print("key: {s} value: {s}\n", .{ iter.key(), iter.value() });
+        iter.next();
+    }
+}
