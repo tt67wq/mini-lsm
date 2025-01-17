@@ -9,10 +9,12 @@ const SsTableIterator = ss_table.SsTableIterator;
 pub const StorageIterator = union(enum) {
     mem_iter: MemTableIterator,
     ss_table_iter: SsTableIterator,
+    merge_iter: MergeIterators,
 
     pub fn deinit(self: *StorageIterator) void {
         switch (self.*) {
             .ss_table_iter => self.ss_table_iter.deinit(),
+            .merge_iter => self.merge_iter.deinit(),
             inline else => {},
         }
     }
@@ -27,6 +29,7 @@ pub const StorageIterator = union(enum) {
         switch (self.*) {
             .mem_iter => self.mem_iter.next(),
             .ss_table_iter => self.ss_table_iter.next(),
+            .merge_iter => self.merge_iter.next(),
         }
     }
 
@@ -42,7 +45,11 @@ pub const StorageIterator = union(enum) {
         }
     }
 
-    pub fn numActiveIterators(_: StorageIterator) usize {
+    pub fn numActiveIterators(self: StorageIterator) usize {
+        switch (self) {
+            .merge_iter => return self.merge_iter.numActiveIterators(),
+            inline else => {},
+        }
         return 1;
     }
 };
@@ -77,7 +84,10 @@ pub const TwoMergeIterator = struct {
         return iter;
     }
 
-    fn deinit(_: *TwoMergeIterator) void {}
+    fn deinit(self: *TwoMergeIterator) void {
+        self.a.deinit();
+        self.b.deinit();
+    }
 
     pub fn key(self: TwoMergeIterator) []const u8 {
         if (self.choose_a) {
@@ -179,7 +189,7 @@ pub const LsmIterator = struct {
         return self.inner.key();
     }
 
-    pub fn value(self: LsmIterator) ?[]const u8 {
+    pub fn value(self: LsmIterator) []const u8 {
         return self.inner.value();
     }
 
