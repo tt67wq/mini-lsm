@@ -3,6 +3,7 @@ const MemTable = @import("MemTable.zig");
 const iterators = @import("iterators.zig");
 const MergeIterators = @import("MergeIterators.zig");
 const ss_table = @import("ss_table.zig");
+const chanz = @import("chanz/chanz.zig");
 const atomic = std.atomic;
 const Bound = MemTable.Bound;
 const MemTableIterator = MemTable.MemTableIterator;
@@ -20,6 +21,8 @@ pub const StorageOptions = struct {
     num_memtable_limit: usize,
     enable_wal: bool,
 };
+
+pub const Stopper = chanz.Chan(struct {});
 
 pub const StorageState = struct {
     allocator: std.mem.Allocator,
@@ -460,15 +463,26 @@ pub const StorageInner = struct {
         try self.flushNextMemtable();
     }
 
-    fn flushLoop(self: *Self) !void {
+    fn flushLoop(self: *Self, stopper: *Stopper) !void {
         while (true) {
+            const ss = stopper.justRecv() catch {
+                // closed
+                return;
+            };
+            if (ss) |_| {
+                // receive stop signal
+                return;
+            }
             try self.triggerFlush();
             try std.time.sleep(50 * std.time.ns_per_ms);
         }
     }
 
-    fn spawnCompactionThread(self: *Self) !void {
-        std.Thread.spawn(.{}, self.flushLoop, .{});
+    pub fn spawnCompactionThread(self: *Self) !Stopper {
+        var stopper = Stopper.init(self.allocator);
+        errdefer stopper.deinit();
+        try std.Thread.spawn(.{}, self.flushLoop, .{&stopper});
+        return stopper;
     }
 };
 
