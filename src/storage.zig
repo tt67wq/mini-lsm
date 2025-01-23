@@ -448,6 +448,28 @@ pub const StorageInner = struct {
             try self.state.sstables.put(sst.id, sst);
         }
     }
+
+    fn triggerFlush(self: *Self) !void {
+        {
+            self.state_lock.lockShared();
+            defer self.state_lock.unlockShared();
+            if (self.state.imm_mem_tables.items.len < self.options.num_memtable_limit) {
+                return;
+            }
+        }
+        try self.flushNextMemtable();
+    }
+
+    fn flushLoop(self: *Self) !void {
+        while (true) {
+            try self.triggerFlush();
+            try std.time.sleep(50 * std.time.ns_per_ms);
+        }
+    }
+
+    fn spawnCompactionThread(self: *Self) !void {
+        std.Thread.spawn(.{}, self.flushLoop, .{});
+    }
 };
 
 test "init" {
