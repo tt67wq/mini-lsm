@@ -153,7 +153,7 @@ fn Chan(comptime T: type) type {
         }
 
         pub fn justRecv(self: *Self) ChanError!?T {
-            if (self.closed) return null;
+            if (self.closed) return ChanError.Closed;
             self.mut.lock();
             errdefer self.mut.unlock();
 
@@ -264,6 +264,31 @@ fn BufferedChan(comptime T: type, comptime bufSize: u8) type {
             return;
         }
 
+        pub fn justSend(self: *Self, data: T) ChanError!void {
+            if (self.closed) return ChanError.Closed;
+            self.mut.lock();
+            errdefer self.mut.unlock();
+
+            // case: receiver already waiting
+            // pull receiver (if any) and give it data. Signal receiver that it's done waiting.
+            if (self.recvQ.items.len > 0) {
+                defer self.mut.unlock();
+                var receiver: *rType = self.recvQ.orderedRemove(0);
+                receiver.putDataAndSignal(data);
+                return;
+            }
+
+            // no receiver waiting, put in buffer
+            if (self._capacity > 0 and self.hasRoom()) {
+                defer self.mut.unlock();
+                self.q.writeItemAssumeCapacity(data);
+                return;
+            }
+
+            // no buffer room. Just return
+            return;
+        }
+
         pub fn recv(self: *Self) ChanError!T {
             if (self.closed) return ChanError.Closed;
             self.mut.lock();
@@ -310,6 +335,37 @@ fn BufferedChan(comptime T: type, comptime bufSize: u8) type {
             } else {
                 return ChanError.DataCorruption;
             }
+        }
+
+        pub fn justRecv(self: *Self) ChanError!?T {
+            if (self.closed) return ChanError.Closed;
+            self.mut.lock();
+            errdefer self.mut.unlock();
+
+            // case: value in buffer
+            if (self._capacity > 0 and self.len() > 0) {
+                defer self.mut.unlock();
+                const val = self.q.readItem().?;
+
+                // top up buffer with a waiting sender, if any
+                if (self.sendQ.items.len > 0) {
+                    var sender: *sType = self.sendQ.orderedRemove(0);
+                    const valFromSender: T = sender.getDataAndSignal();
+                    self.q.writeItemAssumeCapacity(valFromSender);
+                }
+                return val;
+            }
+
+            // case: no value in buffer, but sender waiting
+            if (self.sendQ.items.len > 0) {
+                defer self.mut.unlock();
+                var sender: *sType = self.sendQ.orderedRemove(0);
+                const data: T = sender.getDataAndSignal();
+                return data;
+            }
+
+            // no value in buffer, no sender waiting. Just return null
+            return null;
         }
     };
 }
