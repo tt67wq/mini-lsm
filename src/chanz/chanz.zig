@@ -1,4 +1,5 @@
 const std = @import("std");
+const atomic = std.atomic;
 const fifo = std.fifo;
 
 const ChanError = error{
@@ -45,7 +46,7 @@ fn Chan(comptime T: type) type {
         alloc: std.mem.Allocator = undefined,
         recvQ: std.ArrayList(*rType) = undefined,
         sendQ: std.ArrayList(*sType) = undefined,
-        closed: bool = false,
+        closed: atomic.Value(bool) = atomic.Value(bool).init(false),
 
         pub fn init(alloc: std.mem.Allocator) Self {
             return Self{
@@ -61,7 +62,7 @@ fn Chan(comptime T: type) type {
         }
 
         pub fn close(self: *Self) void {
-            self.closed = true;
+            self.closed.store(true, .monotonic);
         }
 
         pub fn capacity(_: *Self) u8 {
@@ -72,8 +73,12 @@ fn Chan(comptime T: type) type {
             std.debug.print("unbuffered chan has no buf\n");
         }
 
+        fn is_closed(self: *Self) bool {
+            return self.closed.load(.monotonic);
+        }
+
         pub fn send(self: *Self, data: T) ChanError!void {
-            if (self.closed) return ChanError.Closed;
+            if (self.is_closed()) return ChanError.Closed;
 
             self.mut.lock();
             errdefer self.mut.unlock();
@@ -102,7 +107,7 @@ fn Chan(comptime T: type) type {
         }
 
         pub fn justSend(self: *Self, data: T) ChanError!void {
-            if (self.closed) return ChanError.Closed;
+            if (self.is_closed()) return ChanError.Closed;
             self.mut.lock();
             errdefer self.mut.unlock();
 
@@ -119,7 +124,7 @@ fn Chan(comptime T: type) type {
         }
 
         pub fn recv(self: *Self) ChanError!T {
-            if (self.closed) return ChanError.Closed;
+            if (self.is_closed()) return ChanError.Closed;
             self.mut.lock();
             errdefer self.mut.unlock();
 
@@ -153,7 +158,7 @@ fn Chan(comptime T: type) type {
         }
 
         pub fn justRecv(self: *Self) ChanError!?T {
-            if (self.closed) return ChanError.Closed;
+            if (self.is_closed()) return ChanError.Closed;
             self.mut.lock();
             errdefer self.mut.unlock();
 
@@ -181,7 +186,7 @@ fn BufferedChan(comptime T: type, comptime bufSize: u8) type {
 
         q: qtype = undefined,
         _capacity: u8 = bufSize,
-        closed: bool = false,
+        closed: atomic.Value(bool) = atomic.Value(bool).init(false),
         mut: std.Thread.Mutex = std.Thread.Mutex{},
         alloc: std.mem.Allocator = undefined,
         recvQ: std.ArrayList(*rType) = undefined,
@@ -203,7 +208,11 @@ fn BufferedChan(comptime T: type, comptime bufSize: u8) type {
         }
 
         pub fn close(self: *Self) void {
-            self.closed = true;
+            self.closed.store(true, .monotonic);
+        }
+
+        fn is_closed(self: *Self) bool {
+            return self.closed.load(.monotonic);
         }
 
         pub fn debugBuf(self: *Self) !void {
@@ -229,7 +238,7 @@ fn BufferedChan(comptime T: type, comptime bufSize: u8) type {
         }
 
         pub fn send(self: *Self, data: T) ChanError!void {
-            if (self.closed) return ChanError.Closed;
+            if (self.is_closed()) return ChanError.Closed;
 
             self.mut.lock();
             errdefer self.mut.unlock();
@@ -265,7 +274,7 @@ fn BufferedChan(comptime T: type, comptime bufSize: u8) type {
         }
 
         pub fn justSend(self: *Self, data: T) ChanError!void {
-            if (self.closed) return ChanError.Closed;
+            if (self.is_closed()) return ChanError.Closed;
             self.mut.lock();
             errdefer self.mut.unlock();
 
@@ -290,7 +299,7 @@ fn BufferedChan(comptime T: type, comptime bufSize: u8) type {
         }
 
         pub fn recv(self: *Self) ChanError!T {
-            if (self.closed) return ChanError.Closed;
+            if (self.is_closed()) return ChanError.Closed;
             self.mut.lock();
             errdefer self.mut.unlock();
 
@@ -338,7 +347,7 @@ fn BufferedChan(comptime T: type, comptime bufSize: u8) type {
         }
 
         pub fn justRecv(self: *Self) ChanError!?T {
-            if (self.closed) return ChanError.Closed;
+            if (self.is_closed()) return ChanError.Closed;
             self.mut.lock();
             errdefer self.mut.unlock();
 
