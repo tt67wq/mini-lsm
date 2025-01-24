@@ -3,7 +3,6 @@ const MemTable = @import("MemTable.zig");
 const iterators = @import("iterators.zig");
 const MergeIterators = @import("MergeIterators.zig");
 const ss_table = @import("ss_table.zig");
-const chanz = @import("chanz/chanz.zig");
 const atomic = std.atomic;
 const Bound = MemTable.Bound;
 const MemTableIterator = MemTable.MemTableIterator;
@@ -21,8 +20,6 @@ pub const StorageOptions = struct {
     num_memtable_limit: usize,
     enable_wal: bool,
 };
-
-pub const Stopper = chanz.Chan(struct {});
 
 pub const StorageState = struct {
     allocator: std.mem.Allocator,
@@ -95,11 +92,13 @@ pub const StorageInner = struct {
 
     allocator: std.mem.Allocator,
     state: StorageState,
-    state_lock: std.Thread.RwLock,
+    state_lock: std.Thread.RwLock = .{},
     next_sst_id: atomic.Value(usize),
     path: []const u8,
     options: StorageOptions,
     block_cache: *BlockCache,
+    terminate: std.Thread.ResetEvent = .{},
+    wg: std.Thread.WaitGroup = .{},
 
     pub fn init(allocator: std.mem.Allocator, path: []const u8, options: StorageOptions) !Self {
         var state = StorageState.init(allocator, options);
@@ -140,7 +139,6 @@ pub const StorageInner = struct {
             .allocator = allocator,
             .path = path,
             .state = state,
-            .state_lock = .{},
             .next_sst_id = atomic.Value(usize).init(next_sst_id + 1),
             .options = options,
             .block_cache = cache,
@@ -148,10 +146,47 @@ pub const StorageInner = struct {
     }
 
     pub fn deinit(self: *Self) void {
+        // stop compaction thread
+        self.terminate.set();
+        self.wg.wait();
+
+        // free state
         self.state.deinit();
+
         // free block_cache
         self.block_cache.deinit();
         self.allocator.destroy(self.block_cache);
+    }
+
+    pub fn syncDir(self: Self) !void {
+        const DirSyncer = struct {
+            fn sync(dir: std.fs.Dir) !void {
+                var it = dir.iterate();
+                while (try it.next()) |en| {
+                    switch (en.kind) {
+                        .file => {
+                            try syncFile(dir, en.name);
+                        },
+                        .directory => {
+                            var sd = try dir.openDir(en.name, .{});
+                            defer sd.close();
+                            try sync(sd);
+                        },
+                        inline else => {},
+                    }
+                }
+            }
+
+            fn syncFile(dir: std.fs.Dir, name: []const u8) !void {
+                var file = try dir.openFile(name, .{});
+                defer file.close();
+                try file.sync();
+            }
+        };
+        var dir = try std.fs.cwd().openDir(self.path, .{});
+        defer dir.close();
+
+        try DirSyncer.sync(dir);
     }
 
     fn get_next_sst_id(self: *Self) usize {
@@ -463,26 +498,15 @@ pub const StorageInner = struct {
         try self.flushNextMemtable();
     }
 
-    fn flushLoop(self: *Self, stopper: *Stopper) !void {
-        while (true) {
-            const ss = stopper.justRecv() catch {
-                // closed
-                return;
-            };
-            if (ss) |_| {
-                // receive stop signal
-                return;
-            }
+    fn flushLoop(self: *Self) !void {
+        while (!self.terminate.isSet()) {
             try self.triggerFlush();
-            try std.time.sleep(50 * std.time.ns_per_ms);
+            try self.terminate.timedWait(50 * std.time.ns_per_ms);
         }
     }
 
-    pub fn spawnCompactionThread(self: *Self) !Stopper {
-        var stopper = Stopper.init(self.allocator);
-        errdefer stopper.deinit();
-        try std.Thread.spawn(.{}, self.flushLoop, .{&stopper});
-        return stopper;
+    pub fn spawnCompactionThread(self: *Self) void {
+        self.wg.spawnManager(self.flushLoop, .{});
     }
 };
 
