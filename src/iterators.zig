@@ -2,9 +2,12 @@ const std = @import("std");
 const MemTable = @import("MemTable.zig");
 const ss_table = @import("ss_table.zig");
 const MergeIterators = @import("MergeIterators.zig");
+const smart_pointer = @import("smart_pointer.zig");
 const Bound = @import("MemTable.zig").Bound;
 const MemTableIterator = MemTable.MemTableIterator;
 const SsTableIterator = ss_table.SsTableIterator;
+
+pub const StorageIteratorPtr = smart_pointer.SmartPointer(StorageIterator);
 
 pub const StorageIterator = union(enum) {
     mem_iter: MemTableIterator,
@@ -55,8 +58,8 @@ pub const StorageIterator = union(enum) {
 };
 
 pub const TwoMergeIterator = struct {
-    a: StorageIterator,
-    b: StorageIterator,
+    a: StorageIteratorPtr,
+    b: StorageIteratorPtr,
     choose_a: bool,
 
     fn chooseA(a: StorageIterator, b: StorageIterator) bool {
@@ -70,62 +73,72 @@ pub const TwoMergeIterator = struct {
     }
 
     fn skipB(self: *TwoMergeIterator) void {
-        if (!self.a.isEmpty() and !self.b.isEmpty() and std.mem.eql(u8, self.a.key(), self.b.key())) self.b.next();
+        const ap = self.aPtr();
+        const bp = self.bPtr();
+        if (!ap.isEmpty() and !bp.isEmpty() and std.mem.eql(u8, ap.key(), bp.key())) bp.next();
     }
 
-    pub fn init(a: StorageIterator, b: StorageIterator) TwoMergeIterator {
+    fn aPtr(self: TwoMergeIterator) *StorageIterator {
+        return smart_pointer.get(StorageIterator, self.a);
+    }
+
+    fn bPtr(self: TwoMergeIterator) *StorageIterator {
+        return smart_pointer.get(StorageIterator, self.b);
+    }
+
+    pub fn init(a: StorageIteratorPtr, b: StorageIteratorPtr) TwoMergeIterator {
         var iter = TwoMergeIterator{
             .a = a,
             .b = b,
             .choose_a = false,
         };
         iter.skipB();
-        iter.choose_a = chooseA(a, b);
+        iter.choose_a = chooseA(iter.aPtr(), iter.bPtr());
         return iter;
     }
 
     fn deinit(self: *TwoMergeIterator) void {
-        self.a.deinit();
-        self.b.deinit();
+        self.a.release();
+        self.b.release();
     }
 
     pub fn key(self: TwoMergeIterator) []const u8 {
         if (self.choose_a) {
-            std.debug.assert(!self.a.isEmpty());
-            return self.a.key();
+            std.debug.assert(!self.aPtr().isEmpty());
+            return self.aPtr().key();
         }
-        std.debug.assert(!self.b.isEmpty());
-        return self.b.key();
+        std.debug.assert(!self.bPtr().isEmpty());
+        return self.bPtr().key();
     }
 
     pub fn value(self: TwoMergeIterator) []const u8 {
         if (self.choose_a) {
-            std.debug.assert(!self.a.isEmpty());
-            return self.a.value();
+            std.debug.assert(!self.aPtr().isEmpty());
+            return self.aPtr().value();
         }
-        std.debug.assert(!self.b.isEmpty());
-        return self.b.value();
+        std.debug.assert(!self.bPtr().isEmpty());
+        return self.bPtr().value();
     }
 
     pub fn isEmpty(self: TwoMergeIterator) bool {
         if (self.choose_a) {
-            return self.a.isEmpty();
+            return self.aPtr().isEmpty();
         }
-        return self.b.isEmpty();
+        return self.bPtr().isEmpty();
     }
 
     pub fn next(self: *TwoMergeIterator) void {
         if (self.choose_a) {
-            self.a.next();
+            self.aPtr().next();
         } else {
-            self.b.next();
+            self.bPtr().next();
         }
         self.skipB();
-        self.choose_a = chooseA(self.a, self.b);
+        self.choose_a = chooseA(self.aPtr(), self.bPtr());
     }
 
     pub fn numActiveIterators(self: TwoMergeIterator) usize {
-        return self.a.numActiveIterators() + self.b.numActiveIterators();
+        return self.aPtr().numActiveIterators() + self.bPtr().numActiveIterators();
     }
 };
 
