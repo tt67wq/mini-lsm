@@ -1,34 +1,41 @@
 const std = @import("std");
-const StorageIterator = @import("iterators.zig").StorageIterator;
+const smart_pointer = @import("smart_pointer.zig");
+const iterators = @import("iterators.zig");
+const StorageIterator = iterators.StorageIterator;
+const StorageIteratorPtr = iterators.StorageIteratorPtr;
 
 const Self = @This();
 
 const HeapWrapper = struct {
     id: usize,
-    ee: StorageIterator,
+    ee: StorageIteratorPtr,
 
-    pub fn init(id: usize, ee: StorageIterator) HeapWrapper {
+    pub fn init(id: usize, ee: StorageIteratorPtr) HeapWrapper {
         return HeapWrapper{ .id = id, .ee = ee };
     }
 
     pub fn deinit(self: *HeapWrapper) void {
-        self.ee.deinit();
+        self.ee.release();
+    }
+
+    pub fn storageIterator(self: HeapWrapper) *StorageIterator {
+        return smart_pointer.get(StorageIterator, self.ee);
     }
 
     pub fn isEmpty(self: HeapWrapper) bool {
-        return self.ee.isEmpty();
+        return self.storageIterator().isEmpty();
     }
 
     pub fn next(self: *HeapWrapper) void {
-        self.ee.next();
+        self.storageIterator().next();
     }
 
     pub fn key(self: HeapWrapper) []const u8 {
-        return self.ee.key();
+        return self.storageIterator().key();
     }
 
     pub fn value(self: HeapWrapper) []const u8 {
-        return self.ee.value();
+        return self.storageIterator().value();
     }
 
     pub fn lessThan(self: *HeapWrapper, other: *HeapWrapper) bool {
@@ -49,7 +56,7 @@ const Comparer = struct {
     }
 
     pub fn cmp(_: Context, a: *HeapWrapper, b: *HeapWrapper) std.math.Order {
-        const c1 = cmpIter(a.ee, b.ee);
+        const c1 = cmpIter(a.storageIterator().*, b.storageIterator().*);
         if (c1 == .eq) {
             return cmpId(a.id, b.id);
         }
@@ -63,7 +70,7 @@ allocator: std.mem.Allocator,
 q: IteratorHeap,
 current: ?*HeapWrapper,
 
-pub fn init(allocator: std.mem.Allocator, iters: std.ArrayList(StorageIterator)) !Self {
+pub fn init(allocator: std.mem.Allocator, iters: std.ArrayList(StorageIteratorPtr)) !Self {
     var q = IteratorHeap.init(allocator, .{});
     if (iters.items.len == 0) {
         return Self{
@@ -74,11 +81,12 @@ pub fn init(allocator: std.mem.Allocator, iters: std.ArrayList(StorageIterator))
     }
 
     // PS: the last iter has the highest priority
-    for (iters.items, 0..) |iter, i| {
-        if (!iter.isEmpty()) {
+    for (iters.items, 0..) |sp, i| {
+        const si = smart_pointer.get(StorageIterator, sp);
+        if (!si.isEmpty()) {
             const hw = try allocator.create(HeapWrapper);
             errdefer allocator.destroy(hw);
-            hw.* = HeapWrapper.init(i, iter);
+            hw.* = HeapWrapper.init(i, sp);
             try q.add(hw);
         }
     }
@@ -197,15 +205,24 @@ test "merge_iterator" {
     try m3.put("c", "4");
     try m3.put("d", "5");
 
-    var iters = std.ArrayList(StorageIterator).init(allocator);
+    var iters = std.ArrayList(StorageIteratorPtr).init(allocator);
     defer iters.deinit();
 
     const bound_a = MemTable.Bound.init("a", .included);
     const bound_z = MemTable.Bound.init("z", .included);
 
-    try iters.append(StorageIterator{ .mem_iter = m1.scan(bound_a, bound_z) });
-    try iters.append(StorageIterator{ .mem_iter = m2.scan(bound_a, bound_z) });
-    try iters.append(StorageIterator{ .mem_iter = m3.scan(bound_a, bound_z) });
+    var s1 = try StorageIteratorPtr.create(allocator, StorageIterator{ .mem_iter = m1.scan(bound_a, bound_z) });
+    defer s1.release();
+
+    var s2 = try StorageIteratorPtr.create(allocator, StorageIterator{ .mem_iter = m2.scan(bound_a, bound_z) });
+    defer s2.release();
+
+    var s3 = try StorageIteratorPtr.create(allocator, StorageIterator{ .mem_iter = m3.scan(bound_a, bound_z) });
+    defer s3.release();
+
+    try iters.append(s1.clone());
+    try iters.append(s2.clone());
+    try iters.append(s3.clone());
 
     // 2 iter1: b->del, c->4, d->5
     // 1 iter2: a->1, b->2, c->3
