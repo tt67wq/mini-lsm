@@ -7,10 +7,10 @@ const RefCounted = struct {
     allocator: std.mem.Allocator,
     counter: atomic.Value(usize),
     data: *anyopaque,
-    destroy_fn: *const fn (*anyopaque) void,
+    destroy_fn: *const fn (std.mem.Allocator, *anyopaque) void,
 
     // 创建智能指针（基础版本）
-    fn create(allocator: std.mem.Allocator, ptr: anytype, destroy: fn (@TypeOf(ptr)) void) !*RefCounted {
+    fn create(allocator: std.mem.Allocator, ptr: anytype, destroy: fn (std.mem.Allocator, @TypeOf(ptr)) void) !*RefCounted {
         const wrapper = try allocator.create(RefCounted);
 
         wrapper.* = .{
@@ -33,7 +33,7 @@ const RefCounted = struct {
         const prev = rc.counter.fetchSub(1, .release);
         if (prev == 1) {
             rc.counter.fence(.acquire);
-            rc.destroy_fn(rc.data);
+            rc.destroy_fn(rc.allocator, rc.data);
             rc.allocator.destroy(rc);
         }
     }
@@ -42,6 +42,7 @@ const RefCounted = struct {
 // 第 2 阶段：类型安全包装器
 pub fn SmartPointer(comptime T: type) type {
     return struct {
+        allocator: std.mem.Allocator,
         rc: *RefCounted,
         ptr: *T,
 
@@ -49,24 +50,35 @@ pub fn SmartPointer(comptime T: type) type {
 
         // 创建智能指针（类型安全版本）
         pub fn create(allocator: std.mem.Allocator, value: T) !Self {
-            const ptr = try std.heap.page_allocator.create(T);
+            const ptr = try allocator.create(T);
             ptr.* = value;
 
             return .{
+                .allocator = allocator,
                 .rc = try RefCounted.create(allocator, ptr, destroyT),
                 .ptr = ptr,
             };
         }
 
         // 类型特化的销毁函数
-        fn destroyT(ptr: *T) void {
-            std.heap.page_allocator.destroy(ptr);
+        fn destroyT(allocator: std.mem.Allocator, ptr: *T) void {
+            mayDeinit(ptr);
+            allocator.destroy(ptr);
+        }
+
+        fn mayDeinit(ptr: *T) void {
+            const typeinfo = @typeInfo(T);
+            if (typeinfo != .Struct) return;
+            if (@hasDecl(T, "deinit")) {
+                ptr.deinit();
+            }
         }
 
         // 复制指针（增加引用计数）
         pub fn clone(self: Self) Self {
             self.rc.retain();
             return .{
+                .allocator = self.allocator,
                 .rc = self.rc,
                 .ptr = self.ptr,
             };
@@ -108,6 +120,30 @@ test "智能指针基础功能" {
     sp.ptr.value += 10;
     sp.release();
     try testing.expect(sp2.ptr.value == 52);
+}
+
+test "Struct with deinit" {
+    const MyType = struct {
+        allocator: std.mem.Allocator,
+        value: []u8,
+
+        const Self = @This();
+
+        fn init(allocator: std.mem.Allocator, value: []const u8) !Self {
+            return .{
+                .allocator = allocator,
+                .value = try allocator.dupe(u8, value),
+            };
+        }
+
+        fn deinit(self: *Self) void {
+            self.allocator.free(self.value);
+        }
+    };
+
+    const m1 = try MyType.init(std.testing.allocator, "Hello");
+    var sp = try SmartPointer(MyType).create(std.testing.allocator, m1);
+    defer sp.release();
 }
 
 test "类型安全访问" {
