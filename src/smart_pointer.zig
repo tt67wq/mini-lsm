@@ -137,6 +137,7 @@ test "Struct with deinit" {
         }
 
         fn deinit(self: *Self) void {
+            std.debug.print("deiniting myself\n", .{});
             self.allocator.free(self.value);
         }
     };
