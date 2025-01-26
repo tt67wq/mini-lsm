@@ -7,6 +7,7 @@ const atomic = std.atomic;
 const Bound = MemTable.Bound;
 const MemTableIterator = MemTable.MemTableIterator;
 const StorageIterator = iterators.StorageIterator;
+const StorageIteratorPtr = iterators.StorageIteratorPtr;
 const LsmIterator = iterators.LsmIterator;
 const TwoMergeIterator = iterators.TwoMergeIterator;
 const SsTable = ss_table.SsTable;
@@ -377,7 +378,7 @@ pub const StorageInner = struct {
     }
 
     pub fn scan(self: *Self, lower: Bound, upper: Bound) !LsmIterator {
-        var memtable_iters = std.ArrayList(StorageIterator).init(self.allocator);
+        var memtable_iters = std.ArrayList(StorageIteratorPtr).init(self.allocator);
         defer memtable_iters.deinit();
 
         // collect memtable iterators
@@ -385,20 +386,26 @@ pub const StorageInner = struct {
             self.state_lock.lockShared();
             defer self.state_lock.unlockShared();
             for (self.state.imm_mem_tables.items) |imm_table| {
-                try memtable_iters.append(
-                    .{ .mem_iter = imm_table.scan(lower, upper) },
-                );
+                if (!imm_table.isEmpty()) {
+                    var sp = try StorageIteratorPtr.create(self.allocator, .{
+                        .mem_iter = imm_table.scan(lower, upper),
+                    });
+                    errdefer sp.release();
+                    try memtable_iters.append(sp);
+                }
             }
-            try memtable_iters.append(
-                .{ .mem_iter = self.state.getMemTable().scan(lower, upper) },
-            );
+            var sp = try StorageIteratorPtr.create(self.allocator, .{
+                .mem_iter = self.state.getMemTable().scan(lower, upper),
+            });
+            errdefer sp.release();
+            try memtable_iters.append(sp);
         }
 
         var m1 = try MergeIterators.init(self.allocator, memtable_iters);
         errdefer m1.deinit();
 
         // l0_sst
-        var sst_iters = std.ArrayList(StorageIterator).init(self.allocator);
+        var sst_iters = std.ArrayList(StorageIteratorPtr).init(self.allocator);
         defer sst_iters.deinit();
 
         // collect sst iterators
@@ -426,7 +433,11 @@ pub const StorageInner = struct {
                             errdefer ss_iter.deinit();
                         },
                     }
-                    try sst_iters.append(.{ .ss_table_iter = ss_iter });
+                    const sp = try StorageIteratorPtr.create(self.allocator, .{
+                        .ss_table_iter = ss_iter,
+                    });
+                    errdefer sp.release();
+                    try sst_iters.append(sp);
                 }
             }
         }
@@ -434,11 +445,14 @@ pub const StorageInner = struct {
         var m2 = try MergeIterators.init(self.allocator, sst_iters);
         errdefer m2.deinit();
 
+        var iter_a = try StorageIteratorPtr.create(self.allocator, .{ .mem_iter = m1 });
+        errdefer iter_a.release();
+
+        var iter_b = try StorageIteratorPtr.create(self.allocator, .{ .mem_iter = m2 });
+        errdefer iter_b.release();
+
         return LsmIterator.init(
-            TwoMergeIterator.init(
-                StorageIterator{ .merge_iter = m1 },
-                StorageIterator{ .merge_iter = m2 },
-            ),
+            TwoMergeIterator.init(iter_a, iter_b),
             upper,
         );
     }
