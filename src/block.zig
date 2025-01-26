@@ -1,4 +1,5 @@
 const std = @import("std");
+const smart_pointer = @import("smart_pointer.zig");
 
 pub const BlockBuilder = struct {
     allocator: std.mem.Allocator,
@@ -103,6 +104,8 @@ pub const BlockBuilder = struct {
     }
 };
 
+pub const BlockPtr = smart_pointer.SmartPointer(Block);
+
 pub const Block = struct {
     data_v: std.ArrayList(u8),
     offset_v: std.ArrayList(u16),
@@ -203,7 +206,7 @@ pub const Block = struct {
 
 pub const BlockIterator = struct {
     allocator: std.mem.Allocator,
-    block: Block,
+    block: BlockPtr,
     first_key: []u8,
     key_v: std.ArrayList(u8),
     value_v: std.ArrayList(u8),
@@ -211,11 +214,11 @@ pub const BlockIterator = struct {
 
     const Self = @This();
 
-    pub fn init(allocator: std.mem.Allocator, block: Block) !Self {
+    pub fn init(allocator: std.mem.Allocator, block: BlockPtr) !Self {
         return Self{
             .allocator = allocator,
             .block = block,
-            .first_key = try block.getFirstKey(allocator),
+            .first_key = try block.get().getFirstKey(allocator),
             .key_v = std.ArrayList(u8).init(allocator),
             .value_v = std.ArrayList(u8).init(allocator),
             .idx = 0,
@@ -226,15 +229,16 @@ pub const BlockIterator = struct {
         self.allocator.free(self.first_key);
         self.key_v.deinit();
         self.value_v.deinit();
+        self.block.release();
     }
 
-    pub fn createAndSeekToFirst(allocator: std.mem.Allocator, block: Block) !Self {
+    pub fn createAndSeekToFirst(allocator: std.mem.Allocator, block: BlockPtr) !Self {
         var it = try Self.init(allocator, block);
         try it.seekToFirst();
         return it;
     }
 
-    pub fn createAndSeekToKey(allocator: std.mem.Allocator, block: Block, kk: []const u8) !Self {
+    pub fn createAndSeekToKey(allocator: std.mem.Allocator, block: BlockPtr, kk: []const u8) !Self {
         var it = try Self.init(allocator, block);
         try it.seekToKey(kk);
         return it;
@@ -264,18 +268,18 @@ pub const BlockIterator = struct {
     }
 
     fn seekTo(self: *Self, idx: usize) !void {
-        if (idx >= self.block.offset_v.items.len) {
+        if (idx >= self.block.get().offset_v.items.len) {
             self.key_v.clearAndFree();
             self.value_v.clearAndFree();
             return;
         }
-        const offset: usize = @intCast(self.block.offset_v.items[idx]);
+        const offset: usize = @intCast(self.block.get().offset_v.items[idx]);
         try self.seekToOffset(offset);
         self.idx = idx;
     }
 
     fn seekToOffset(self: *Self, offset: usize) !void {
-        var stream = std.io.fixedBufferStream(self.block.data_v.items[offset..]);
+        var stream = std.io.fixedBufferStream(self.block.get().data_v.items[offset..]);
         var reader = stream.reader();
 
         const overlap_len = try reader.readInt(u16, .big);
@@ -300,7 +304,7 @@ pub const BlockIterator = struct {
 
     fn seekToKey(self: *Self, kk: []const u8) !void {
         var low: usize = 0;
-        var high = self.block.offset_v.items.len;
+        var high = self.block.get().offset_v.items.len;
 
         while (low < high) {
             const mid = low + (high - low) / 2;
@@ -353,10 +357,9 @@ test "block iterator" {
     try std.testing.expect(try bb.add("foo4", "bar4"));
     try std.testing.expect(try bb.add("foo5", "bar5"));
 
-    var b = try bb.build();
-    defer b.deinit();
-
-    var b_it = try BlockIterator.createAndSeekToFirst(std.testing.allocator, b);
+    var bp = try BlockPtr.create(std.testing.allocator, try bb.build());
+    defer bp.release();
+    var b_it = try BlockIterator.createAndSeekToFirst(std.testing.allocator, bp.clone());
     defer b_it.deinit();
 
     try b_it.seekToFirst();
@@ -373,7 +376,7 @@ test "block iterator" {
     try std.testing.expectEqualStrings("foo3", b_it.key());
     try std.testing.expectEqualStrings("bar3", b_it.value());
 
-    var b_it2 = try BlockIterator.createAndSeekToKey(std.testing.allocator, b, "foo3");
+    var b_it2 = try BlockIterator.createAndSeekToKey(std.testing.allocator, bp.clone(), "foo3");
     defer b_it2.deinit();
     try std.testing.expectEqualStrings("foo3", b_it2.key());
     try std.testing.expectEqualStrings("bar3", b_it2.value());
