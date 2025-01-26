@@ -40,7 +40,7 @@ const RefCounted = struct {
 };
 
 // 第 2 阶段：类型安全包装器
-fn SmartPointer(comptime T: type) type {
+pub fn SmartPointer(comptime T: type) type {
     return struct {
         rc: *RefCounted,
         ptr: *T,
@@ -48,7 +48,7 @@ fn SmartPointer(comptime T: type) type {
         const Self = @This();
 
         // 创建智能指针（类型安全版本）
-        fn create(allocator: std.mem.Allocator, value: T) !Self {
+        pub fn create(allocator: std.mem.Allocator, value: T) !Self {
             const ptr = try std.heap.page_allocator.create(T);
             ptr.* = value;
 
@@ -64,7 +64,7 @@ fn SmartPointer(comptime T: type) type {
         }
 
         // 复制指针（增加引用计数）
-        fn clone(self: Self) Self {
+        pub fn clone(self: Self) Self {
             self.rc.retain();
             return .{
                 .rc = self.rc,
@@ -73,7 +73,7 @@ fn SmartPointer(comptime T: type) type {
         }
 
         // 释放资源
-        fn release(self: *Self) void {
+        pub fn release(self: *Self) void {
             self.rc.release();
             self.ptr = undefined;
         }
@@ -81,7 +81,7 @@ fn SmartPointer(comptime T: type) type {
 }
 
 // 增强安全性（编译时类型检查）
-fn get(comptime T: type, sp: anytype) *T {
+pub fn get(comptime T: type, sp: anytype) *T {
     if (@TypeOf(sp.ptr) != *T) {
         @compileError("Type mismatch in smart pointer access");
     }
