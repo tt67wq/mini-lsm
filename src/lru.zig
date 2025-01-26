@@ -28,12 +28,24 @@ pub fn LruCache(comptime kind: Kind, comptime K: type, comptime V: type) type {
             value: V,
 
             const Self = @This();
+            const v_is_deinitable = isValueDeinitable();
+
+            fn isValueDeinitable() bool {
+                const typeinfo = @typeInfo(V);
+                return typeinfo == .Struct and @hasDecl(V, "deinit");
+            }
 
             pub fn init(key: K, val: V) LruEntry {
                 return LruEntry{
                     .key = key,
                     .value = val,
                 };
+            }
+
+            pub fn deinit(self: *LruEntry) void {
+                if (v_is_deinitable) {
+                    self.value.deinit();
+                }
             }
         };
 
@@ -47,12 +59,7 @@ pub fn LruCache(comptime kind: Kind, comptime K: type, comptime V: type) type {
         }
 
         fn deinitNode(self: *Self, node: *Node) void {
-            // check node data's value has method `deinit`
-            const typeinfo = @typeInfo(V);
-            if (typeinfo == .Struct and @hasDecl(V, "deinit")) {
-                node.data.value.deinit();
-            }
-
+            node.data.deinit();
             self.len -= 1;
             self.allocator.destroy(node);
         }

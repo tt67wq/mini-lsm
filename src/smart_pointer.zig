@@ -85,6 +85,11 @@ pub fn SmartPointer(comptime T: type) type {
             };
         }
 
+        // alias to release
+        pub fn deinit(self: *Self) void {
+            self.release();
+        }
+
         // 释放资源
         pub fn release(self: *Self) void {
             self.rc.release();
