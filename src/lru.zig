@@ -47,17 +47,12 @@ pub fn LruCache(comptime kind: Kind, comptime K: type, comptime V: type) type {
         }
 
         fn deinitNode(self: *Self, node: *Node) void {
+            // check node data's value has method `deinit`
             const typeinfo = @typeInfo(V);
-            switch (typeinfo) {
-                .Struct => |_| {
-                    if (@hasDecl(V, "deinit")) {
-                        node.data.value.deinit();
-                    }
-                },
-                else => {},
+            if (typeinfo == .Struct and @hasDecl(V, "deinit")) {
+                node.data.value.deinit();
             }
 
-            // check node data's value has method `deinit`
             self.len -= 1;
             self.allocator.destroy(node);
         }
