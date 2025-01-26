@@ -47,6 +47,7 @@ pub fn SmartPointer(comptime T: type) type {
         ptr: *T,
 
         const Self = @This();
+        const is_deinitable = hasDeinit();
 
         // 创建智能指针（类型安全版本）
         pub fn create(allocator: std.mem.Allocator, value: T) !Self {
@@ -60,18 +61,18 @@ pub fn SmartPointer(comptime T: type) type {
             };
         }
 
-        // 类型特化的销毁函数
-        fn destroyT(allocator: std.mem.Allocator, ptr: *T) void {
-            mayDeinit(ptr);
-            allocator.destroy(ptr);
+        fn hasDeinit() bool {
+            const typeinfo = @typeInfo(T);
+            if (typeinfo != .Struct) return false;
+            return @hasDecl(T, "deinit");
         }
 
-        fn mayDeinit(ptr: *T) void {
-            const typeinfo = @typeInfo(T);
-            if (typeinfo != .Struct) return;
-            if (@hasDecl(T, "deinit")) {
+        // 类型特化的销毁函数
+        fn destroyT(allocator: std.mem.Allocator, ptr: *T) void {
+            if (is_deinitable) {
                 ptr.deinit();
             }
+            allocator.destroy(ptr);
         }
 
         // 复制指针（增加引用计数）
