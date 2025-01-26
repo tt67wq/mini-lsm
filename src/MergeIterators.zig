@@ -1,5 +1,4 @@
 const std = @import("std");
-const smart_pointer = @import("smart_pointer.zig");
 const iterators = @import("iterators.zig");
 const StorageIterator = iterators.StorageIterator;
 const StorageIteratorPtr = iterators.StorageIteratorPtr;
@@ -18,24 +17,20 @@ const HeapWrapper = struct {
         self.ee.release();
     }
 
-    pub fn storageIterator(self: HeapWrapper) *StorageIterator {
-        return smart_pointer.get(StorageIterator, self.ee);
-    }
-
     pub fn isEmpty(self: HeapWrapper) bool {
-        return self.storageIterator().isEmpty();
+        return self.ee.get().isEmpty();
     }
 
     pub fn next(self: *HeapWrapper) void {
-        self.storageIterator().next();
+        self.ee.get().next();
     }
 
     pub fn key(self: HeapWrapper) []const u8 {
-        return self.storageIterator().key();
+        return self.ee.get().*.key();
     }
 
     pub fn value(self: HeapWrapper) []const u8 {
-        return self.storageIterator().value();
+        return self.ee.get().*.value();
     }
 
     pub fn lessThan(self: *HeapWrapper, other: *HeapWrapper) bool {
@@ -82,7 +77,7 @@ pub fn init(allocator: std.mem.Allocator, iters: std.ArrayList(StorageIteratorPt
 
     // PS: the last iter has the highest priority
     for (iters.items, 0..) |sp, i| {
-        const si = smart_pointer.get(StorageIterator, sp);
+        const si = sp.get();
         if (!si.isEmpty()) {
             const hw = try allocator.create(HeapWrapper);
             errdefer allocator.destroy(hw);

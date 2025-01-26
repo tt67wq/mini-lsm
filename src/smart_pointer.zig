@@ -95,6 +95,10 @@ pub fn SmartPointer(comptime T: type) type {
             self.rc.release();
             self.ptr = undefined;
         }
+
+        pub fn get(self: Self) *T {
+            return self.ptr;
+        }
     };
 }
 
