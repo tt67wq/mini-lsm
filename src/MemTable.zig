@@ -2,12 +2,15 @@ const std = @import("std");
 const skiplist = @import("skiplist.zig");
 const Wal = @import("Wal.zig");
 const ss_table = @import("ss_table.zig");
+const smart_pointer = @import("smart_pointer.zig");
 const atomic = std.atomic;
 const RwLock = std.Thread.RwLock;
 const SsTableBuilder = ss_table.SsTableBuilder;
 
 const Self = @This();
 const Map = skiplist.SkipList([]const u8, []const u8);
+
+pub const MemTablePtr = smart_pointer.SmartPointer(Self);
 pub const Bound = Map.Bound;
 pub const MemTableIterator = struct {
     iter: Map.Iterator,

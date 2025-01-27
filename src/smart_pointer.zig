@@ -99,6 +99,11 @@ pub fn SmartPointer(comptime T: type) type {
         pub fn get(self: Self) *T {
             return self.ptr;
         }
+
+        // alias to get
+        pub fn load(self: Self) *T {
+            return self.ptr;
+        }
     };
 }
 
@@ -147,7 +152,7 @@ test "Struct with deinit" {
         }
 
         fn deinit(self: *Self) void {
-            std.debug.print("deiniting myself\n", .{});
+            // std.debug.print("deiniting myself\n", .{});
             self.allocator.free(self.value);
         }
     };
