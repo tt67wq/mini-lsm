@@ -51,7 +51,7 @@ const Comparer = struct {
     }
 
     pub fn cmp(_: Context, a: *HeapWrapper, b: *HeapWrapper) std.math.Order {
-        const c1 = cmpIter(a.storageIterator().*, b.storageIterator().*);
+        const c1 = cmpIter(a.ee.get().*, b.ee.get().*);
         if (c1 == .eq) {
             return cmpId(a.id, b.id);
         }
