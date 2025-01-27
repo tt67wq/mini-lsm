@@ -77,11 +77,13 @@ pub fn init(allocator: std.mem.Allocator, iters: std.ArrayList(StorageIteratorPt
 
     // PS: the last iter has the highest priority
     for (iters.items, 0..) |sp, i| {
-        const si = sp.get();
-        if (!si.isEmpty()) {
+        var spp = sp;
+        defer spp.release();
+
+        if (!sp.load().isEmpty()) {
             const hw = try allocator.create(HeapWrapper);
             errdefer allocator.destroy(hw);
-            hw.* = HeapWrapper.init(i, sp);
+            hw.* = HeapWrapper.init(i, sp.clone());
             try q.add(hw);
         }
     }

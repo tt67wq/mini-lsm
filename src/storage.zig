@@ -384,9 +384,9 @@ pub const StorageInner = struct {
             self.state_lock.lockShared();
             defer self.state_lock.unlockShared();
             for (self.state.imm_mem_tables.items) |imm_table| {
-                if (!imm_table.isEmpty()) {
+                if (!imm_table.load().isEmpty()) {
                     var sp = try StorageIteratorPtr.create(self.allocator, .{
-                        .mem_iter = imm_table.scan(lower, upper),
+                        .mem_iter = imm_table.load().scan(lower, upper),
                     });
                     errdefer sp.release();
                     try memtable_iters.append(sp);
@@ -411,27 +411,26 @@ pub const StorageInner = struct {
             self.state_lock.lockShared();
             defer self.state_lock.unlockShared();
             for (self.state.l0_sstables.items) |sst_id| {
-                const table = self.state.sstables.get(sst_id).?;
+                const table_ptr = self.state.sstables.get(sst_id).?;
+                const table = table_ptr.load();
                 if (rangeOverlap(lower, upper, table.firstKey(), table.lastKey())) {
                     var ss_iter: SsTableIterator = undefined;
                     switch (lower.bound_t) {
                         .included => {
-                            ss_iter = try SsTableIterator.initAndSeekToKey(self.allocator, table, lower.data);
-                            errdefer ss_iter.deinit();
+                            ss_iter = try SsTableIterator.initAndSeekToKey(self.allocator, table_ptr, lower.data);
                         },
                         .excluded => {
-                            ss_iter = try SsTableIterator.initAndSeekToKey(self.allocator, table, lower.data);
-                            errdefer ss_iter.deinit();
+                            ss_iter = try SsTableIterator.initAndSeekToKey(self.allocator, table_ptr, lower.data);
                             if (!ss_iter.isEmpty() and std.mem.eql(u8, ss_iter.key(), lower.data)) {
                                 ss_iter.next();
                             }
                         },
                         .unbounded => {
-                            ss_iter = try SsTableIterator.initAndSeekToFirst(self.allocator, table);
-                            errdefer ss_iter.deinit();
+                            ss_iter = try SsTableIterator.initAndSeekToFirst(self.allocator, table_ptr);
                         },
                     }
-                    const sp = try StorageIteratorPtr.create(self.allocator, .{
+                    errdefer ss_iter.deinit();
+                    var sp = try StorageIteratorPtr.create(self.allocator, .{
                         .ss_table_iter = ss_iter,
                     });
                     errdefer sp.release();
@@ -443,10 +442,10 @@ pub const StorageInner = struct {
         var m2 = try MergeIterators.init(self.allocator, sst_iters);
         errdefer m2.deinit();
 
-        var iter_a = try StorageIteratorPtr.create(self.allocator, .{ .mem_iter = m1 });
+        var iter_a = try StorageIteratorPtr.create(self.allocator, .{ .merge_iter = m1 });
         errdefer iter_a.release();
 
-        var iter_b = try StorageIteratorPtr.create(self.allocator, .{ .mem_iter = m2 });
+        var iter_b = try StorageIteratorPtr.create(self.allocator, .{ .merge_iter = m2 });
         errdefer iter_b.release();
 
         return LsmIterator.init(
@@ -467,7 +466,7 @@ pub const StorageInner = struct {
         {
             self.state_lock.lockShared();
             defer self.state_lock.unlockShared();
-            to_flush_table = self.state.imm_mem_tables.getLast();
+            to_flush_table = self.state.imm_mem_tables.getLast().load();
         }
 
         var builder = try SsTableBuilder.init(self.allocator, self.options.block_size);
@@ -476,11 +475,9 @@ pub const StorageInner = struct {
         const sst_id = to_flush_table.id;
         try to_flush_table.flush(&builder);
 
-        const sst = try self.state.allocator.create(SsTable);
-        errdefer self.state.allocator.destroy(sst);
         const sst_path = try self.pathOfSst(sst_id);
         defer self.allocator.free(sst_path);
-        sst.* = try builder.build(sst_id, self.block_cache, sst_path);
+        var sst = try builder.build(sst_id, self.block_cache.clone(), sst_path);
         errdefer sst.deinit();
 
         // add the flushed table to l0_sstables
@@ -488,14 +485,11 @@ pub const StorageInner = struct {
             self.state_lock.lock();
             defer self.state_lock.unlock();
 
-            const m = self.state.imm_mem_tables.pop();
-            defer {
-                m.deinit();
-                self.allocator.destroy(m);
-            }
-            std.debug.assert(m.id == sst_id);
+            var m = self.state.imm_mem_tables.pop();
+            defer m.deinit();
+            std.debug.assert(m.load().id == sst_id);
             try self.state.l0_sstables.insert(0, sst_id);
-            try self.state.sstables.put(sst.id, sst);
+            try self.state.sstables.put(sst.id, try SsTablePtr.create(self.allocator, sst));
         }
     }
 

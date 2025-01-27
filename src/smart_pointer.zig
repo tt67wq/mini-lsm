@@ -63,7 +63,7 @@ pub fn SmartPointer(comptime T: type) type {
 
         fn hasDeinit() bool {
             const typeinfo = @typeInfo(T);
-            if (typeinfo != .Struct) return false;
+            if (typeinfo != .Struct and typeinfo != .Union) return false;
             return @hasDecl(T, "deinit");
         }
 

@@ -62,7 +62,7 @@ pub const TwoMergeIterator = struct {
     b: StorageIteratorPtr,
     choose_a: bool,
 
-    fn chooseA(a: StorageIterator, b: StorageIterator) bool {
+    fn chooseA(a: *StorageIterator, b: *StorageIterator) bool {
         if (a.isEmpty()) {
             return false;
         }
@@ -73,17 +73,9 @@ pub const TwoMergeIterator = struct {
     }
 
     fn skipB(self: *TwoMergeIterator) void {
-        const ap = self.aPtr();
-        const bp = self.bPtr();
+        const ap = self.a.load();
+        const bp = self.b.load();
         if (!ap.isEmpty() and !bp.isEmpty() and std.mem.eql(u8, ap.key(), bp.key())) bp.next();
-    }
-
-    fn aPtr(self: TwoMergeIterator) *StorageIterator {
-        return smart_pointer.get(StorageIterator, self.a);
-    }
-
-    fn bPtr(self: TwoMergeIterator) *StorageIterator {
-        return smart_pointer.get(StorageIterator, self.b);
     }
 
     pub fn init(a: StorageIteratorPtr, b: StorageIteratorPtr) TwoMergeIterator {
@@ -93,7 +85,7 @@ pub const TwoMergeIterator = struct {
             .choose_a = false,
         };
         iter.skipB();
-        iter.choose_a = chooseA(iter.aPtr(), iter.bPtr());
+        iter.choose_a = chooseA(iter.a.load(), iter.b.load());
         return iter;
     }
 
@@ -104,41 +96,41 @@ pub const TwoMergeIterator = struct {
 
     pub fn key(self: TwoMergeIterator) []const u8 {
         if (self.choose_a) {
-            std.debug.assert(!self.aPtr().isEmpty());
-            return self.aPtr().key();
+            std.debug.assert(!self.a.load().isEmpty());
+            return self.a.load().key();
         }
-        std.debug.assert(!self.bPtr().isEmpty());
-        return self.bPtr().key();
+        std.debug.assert(!self.b.load().isEmpty());
+        return self.b.load().key();
     }
 
     pub fn value(self: TwoMergeIterator) []const u8 {
         if (self.choose_a) {
-            std.debug.assert(!self.aPtr().isEmpty());
-            return self.aPtr().value();
+            std.debug.assert(!self.a.load().isEmpty());
+            return self.a.load().value();
         }
-        std.debug.assert(!self.bPtr().isEmpty());
-        return self.bPtr().value();
+        std.debug.assert(!self.b.load().isEmpty());
+        return self.b.load().value();
     }
 
     pub fn isEmpty(self: TwoMergeIterator) bool {
         if (self.choose_a) {
-            return self.aPtr().isEmpty();
+            return self.a.load().isEmpty();
         }
-        return self.bPtr().isEmpty();
+        return self.b.load().isEmpty();
     }
 
     pub fn next(self: *TwoMergeIterator) void {
         if (self.choose_a) {
-            self.aPtr().next();
+            self.a.load().next();
         } else {
-            self.bPtr().next();
+            self.b.load().next();
         }
         self.skipB();
-        self.choose_a = chooseA(self.aPtr(), self.bPtr());
+        self.choose_a = chooseA(self.a.load(), self.b.load());
     }
 
     pub fn numActiveIterators(self: TwoMergeIterator) usize {
-        return self.aPtr().numActiveIterators() + self.bPtr().numActiveIterators();
+        return self.a.load().numActiveIterators() + self.b.load().numActiveIterators();
     }
 };
 
