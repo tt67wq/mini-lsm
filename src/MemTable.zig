@@ -8,7 +8,6 @@ const SsTableBuilder = ss_table.SsTableBuilder;
 
 const Self = @This();
 const Map = skiplist.SkipList([]const u8, []const u8);
-const GC = std.ArrayList([]const u8);
 pub const Bound = Map.Bound;
 pub const MemTableIterator = struct {
     iter: Map.Iterator,
@@ -44,7 +43,6 @@ wal: ?Wal,
 id: usize,
 allocator: std.mem.Allocator,
 arena: std.heap.ArenaAllocator,
-// gabbage: GC,
 approximate_size: atomic.Value(usize) = atomic.Value(usize).init(0),
 
 fn compFunc(a: []const u8, b: []const u8) bool {
