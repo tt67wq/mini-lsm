@@ -204,6 +204,8 @@ pub const Block = struct {
     }
 };
 
+pub const BlockIteratorPtr = smart_pointer.SmartPointer(BlockIterator);
+
 pub const BlockIterator = struct {
     allocator: std.mem.Allocator,
     block: BlockPtr,

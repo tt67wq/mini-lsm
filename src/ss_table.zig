@@ -3,12 +3,18 @@ const FileObject = @import("FileObject.zig");
 const BloomFilter = @import("bloom_filter/BloomFilter.zig");
 const block = @import("block.zig");
 const lru = @import("lru.zig");
+const smart_pointer = @import("smart_pointer.zig");
 const Block = block.Block;
+const BlockPtr = block.BlockPtr;
 const BlockIterator = block.BlockIterator;
+const BlockIteratorPtr = block.BlockIteratorPtr;
 const BlockBuilder = block.BlockBuilder;
 const hash = std.hash;
 
-pub const BlockCache = lru.LruCache(.locking, usize, Block);
+pub const BlockCache = lru.LruCache(.locking, usize, BlockPtr);
+pub const BlockCachePtr = smart_pointer.SmartPointer(BlockCache);
+
+const BloomFilterPtr = smart_pointer.SmartPointer(BloomFilter);
 
 pub const SsTableBuilder = struct {
     allocator: std.mem.Allocator,
@@ -18,11 +24,14 @@ pub const SsTableBuilder = struct {
     meta: std.ArrayList(BlockMeta),
     block_size: usize,
     data: std.ArrayList(u8),
-    bloom: BloomFilter,
+    bloom: BloomFilterPtr,
 
     const Self = @This();
 
     pub fn init(allocator: std.mem.Allocator, block_size: usize) !Self {
+        var bf = try BloomFilter.init(allocator, block_size / 3, 0.01);
+        errdefer bf.deinit();
+        const bp = try BloomFilterPtr.create(allocator, bf);
         return .{
             .allocator = allocator,
             .builder = BlockBuilder.init(allocator, block_size),
@@ -31,7 +40,7 @@ pub const SsTableBuilder = struct {
             .meta = std.ArrayList(BlockMeta).init(allocator),
             .block_size = block_size,
             .data = std.ArrayList(u8).init(allocator),
-            .bloom = try BloomFilter.init(allocator, block_size / 3, 0.01),
+            .bloom = bp,
         };
     }
 
@@ -53,7 +62,7 @@ pub const SsTableBuilder = struct {
 
     pub fn add(self: *Self, key: []const u8, value: []const u8) !void {
         try self.setFirstKey(key);
-        try self.bloom.insert(key);
+        try self.bloom.get().insert(key);
 
         if (try self.builder.add(key, value)) {
             try self.setLastKey(key);
@@ -111,7 +120,7 @@ pub const SsTableBuilder = struct {
     pub fn build(
         self: *Self,
         id: usize,
-        block_cache: ?*BlockCache,
+        block_cache: ?BlockCachePtr,
         path: []const u8,
     ) !SsTable {
         var arena = std.heap.ArenaAllocator.init(self.allocator);
@@ -126,16 +135,11 @@ pub const SsTableBuilder = struct {
         try w.writeInt(u32, @intCast(meta_offset), .big);
 
         const bloom_offset = self.data.items.len;
-        const encoded_bloom = try self.bloom.encode(allocator);
+        const encoded_bloom = try self.bloom.get().encode(allocator);
         _ = try w.write(encoded_bloom);
         try w.writeInt(u32, @intCast(bloom_offset), .big);
         const file = try FileObject.init(path, self.data.items);
         errdefer file.deinit();
-
-        var bp = try self.allocator.create(BloomFilter);
-        errdefer allocator.destroy(bp);
-        bp.* = try self.bloom.clone(self.allocator);
-        errdefer bp.deinit();
 
         const fk = self.meta.items[0].first_key;
         const lk = self.meta.getLast().last_key;
@@ -146,7 +150,7 @@ pub const SsTableBuilder = struct {
             .block_metas = try self.meta.toOwnedSlice(),
             .meta_offset = meta_offset,
             .block_cache = block_cache,
-            .bloom = bp,
+            .bloom = self.bloom.clone(),
             .id = id,
             .first_key = try self.allocator.dupe(u8, fk),
             .last_key = try self.allocator.dupe(u8, lk),
@@ -254,13 +258,15 @@ pub const BlockMeta = struct {
     }
 };
 
+pub const SsTablePtr = smart_pointer.SmartPointer(SsTable);
+
 pub const SsTable = struct {
     allocator: std.mem.Allocator,
     file: FileObject,
     block_metas: []BlockMeta,
     meta_offset: usize,
-    block_cache: ?*BlockCache,
-    bloom: ?*BloomFilter,
+    block_cache: ?BlockCachePtr,
+    bloom: ?BloomFilterPtr,
     id: u64,
     first_key: []const u8,
     last_key: []const u8,
@@ -287,13 +293,16 @@ pub const SsTable = struct {
         }
 
         // free bloom filter
-        {
-            if (self.bloom) |bf| {
-                bf.deinit();
-                self.allocator.destroy(bf);
-            }
+        if (self.bloom) |bf| {
+            var bfp = bf;
+            bfp.release();
         }
 
+        // cache
+        if (self.block_cache) |_| {
+            var cache = self.block_cache.?;
+            cache.release();
+        }
         self.allocator.free(self.first_key);
         self.allocator.free(self.last_key);
     }
@@ -303,7 +312,7 @@ pub const SsTable = struct {
         allocator: std.mem.Allocator,
         id: u64,
         file: FileObject,
-        block_cache: ?*BlockCache,
+        block_cache: ?BlockCachePtr,
     ) !Self {
         const len = file.size;
 
@@ -316,10 +325,11 @@ pub const SsTable = struct {
         const raw_bloom = try allocator.alloc(u8, len - 4 - bloom_offset);
         defer allocator.free(raw_bloom);
         _ = try file.read(bloom_offset, raw_bloom);
-        var bloom_filter = try allocator.create(BloomFilter);
-        errdefer allocator.destroy(bloom_filter);
-        bloom_filter.* = try BloomFilter.decode(allocator, raw_bloom);
-        errdefer bloom_filter.deinit();
+
+        var bf = try BloomFilter.decode(allocator, raw_bloom);
+        errdefer bf.deinit();
+        var bloom_filter = try BloomFilterPtr.create(allocator, bf);
+        errdefer bloom_filter.release();
 
         // read meta
         var raw_meta_offset: [4]u8 = undefined;
@@ -371,6 +381,7 @@ pub const SsTable = struct {
             .block_metas = [_]BlockMeta{},
             .meta_offset = 0,
             .bloom = null,
+            .block_cache = null,
             .id = id,
             .first_key = first_key_d,
             .last_key = last_key_d,
@@ -378,7 +389,7 @@ pub const SsTable = struct {
         };
     }
 
-    pub fn readBlock(self: Self, block_idx: usize, allocator: std.mem.Allocator) !Block {
+    pub fn readBlock(self: Self, block_idx: usize, allocator: std.mem.Allocator) !BlockPtr {
         std.debug.assert(block_idx < self.block_metas.len);
         const offset = self.block_metas[block_idx].offset;
         var offset_end: usize = 0;
@@ -397,18 +408,21 @@ pub const SsTable = struct {
         if (hash.Crc32.hash(block_raw) != cksum) {
             std.debug.panic("checksum mismatch", .{});
         }
-        return try Block.decode(allocator, block_raw);
+        var blk = try Block.decode(allocator, block_raw);
+        errdefer blk.deinit();
+
+        return try BlockPtr.create(allocator, blk);
     }
 
-    pub fn readBlockCached(self: Self, block_idx: usize, allocator: std.mem.Allocator) !Block {
+    pub fn readBlockCached(self: Self, block_idx: usize, allocator: std.mem.Allocator) !BlockPtr {
         if (self.block_cache) |bc| {
-            if (bc.get(block_idx)) |b| {
-                return b.clone(allocator);
+            if (bc.get().get(block_idx)) |b| {
+                return b.clone();
             } else {
                 var b = try self.readBlock(block_idx, allocator);
-                errdefer b.deinit();
-                try bc.insert(block_idx, b);
-                return b.clone(allocator);
+                errdefer b.release();
+                try bc.get().insert(block_idx, b);
+                return b.clone();
             }
         }
         return try self.readBlock(block_idx, allocator);
@@ -443,7 +457,7 @@ pub const SsTable = struct {
         if (std.mem.lessThan(u8, key, fk)) return false;
         if (std.mem.lessThan(u8, lk, key)) return false;
         if (self.bloom) |bf| {
-            return bf.*.contains(key);
+            return bf.get().contains(key);
         }
         return true;
     }
@@ -471,16 +485,17 @@ pub const SsTable = struct {
 
 pub const SsTableIterator = struct {
     allocator: std.mem.Allocator,
-    table: *SsTable,
-    blk: Block,
-    blk_iterator: BlockIterator,
+    table: SsTablePtr,
+    blk: BlockPtr,
+    blk_iterator: BlockIteratorPtr,
     blk_idx: usize,
 
     const Self = @This();
 
     pub fn deinit(self: *Self) void {
-        self.blk.deinit();
-        self.blk_iterator.deinit();
+        self.table.release();
+        self.blk.release();
+        self.blk_iterator.release();
     }
 
     pub fn reset(self: *Self) void {
@@ -488,7 +503,7 @@ pub const SsTableIterator = struct {
         self.blk_iterator.deinit();
     }
 
-    pub fn initAndSeekToFirst(allocator: std.mem.Allocator, table: *SsTable) !Self {
+    pub fn initAndSeekToFirst(allocator: std.mem.Allocator, table: SsTablePtr) !Self {
         const s = try seekToFirstInner(allocator, table);
         return .{
             .allocator = allocator,
@@ -499,7 +514,7 @@ pub const SsTableIterator = struct {
         };
     }
 
-    pub fn initAndSeekToKey(allocator: std.mem.Allocator, table: *SsTable, k: []const u8) !Self {
+    pub fn initAndSeekToKey(allocator: std.mem.Allocator, table: SsTablePtr, k: []const u8) !Self {
         const b = try seekToKeyInner(allocator, table, k);
         return .{
             .allocator = allocator,
@@ -510,50 +525,57 @@ pub const SsTableIterator = struct {
         };
     }
 
-    fn seekToFirstInner(allocator: std.mem.Allocator, table: *SsTable) !struct {
-        blk: Block,
-        blk_iter: BlockIterator,
+    fn seekToFirstInner(allocator: std.mem.Allocator, table: SsTablePtr) !struct {
+        blk: BlockPtr,
+        blk_iter: BlockIteratorPtr,
     } {
-        var blk = try table.readBlockCached(0, allocator);
-        errdefer blk.deinit();
+        var blk = try table.get().readBlockCached(0, allocator);
+        errdefer blk.release();
+        var blk_iter = try BlockIterator.createAndSeekToFirst(allocator, blk.clone());
+        errdefer blk_iter.deinit();
+
         return .{
             .blk = blk,
-            .blk_iter = try BlockIterator.createAndSeekToFirst(allocator, blk),
+            .blk_iter = try BlockIteratorPtr.create(allocator, blk_iter),
         };
     }
 
-    fn seekToKeyInner(allocator: std.mem.Allocator, table: *SsTable, k: []const u8) !struct {
-        blk: Block,
+    fn seekToKeyInner(allocator: std.mem.Allocator, table: SsTablePtr, k: []const u8) !struct {
         blk_idx: usize,
-        blk_iter: BlockIterator,
+        blk: BlockPtr,
+        blk_iter: BlockIteratorPtr,
     } {
-        var blk_idx = try table.findBlockIndex(k);
-        var blk = try table.readBlockCached(blk_idx, allocator);
+        const table_ptr = table.get();
+        var blk_idx = try table_ptr.findBlockIndex(k);
+        var blk = try table_ptr.readBlockCached(blk_idx, allocator);
         errdefer blk.deinit();
-        var blk_iter = try BlockIterator.createAndSeekToKey(allocator, blk, k);
+        var blk_iter = try BlockIterator.createAndSeekToKey(allocator, blk.clone(), k);
         errdefer blk_iter.deinit();
+        var blk_iter_ptr = try BlockIteratorPtr.create(allocator, blk_iter);
+        errdefer blk_iter_ptr.release();
+
         if (blk_iter.isEmpty()) {
             blk_idx += 1;
-            if (blk_idx < table.numBlocks()) {
+            if (blk_idx < table_ptr.numBlocks()) {
                 {
                     blk.deinit();
                     blk_iter.deinit();
                 }
-                var blk2 = try table.readBlockCached(blk_idx, allocator);
+                var blk2 = try table_ptr.readBlockCached(blk_idx, allocator);
                 errdefer blk2.deinit();
-                var blk_iter2 = try BlockIterator.createAndSeekToFirst(allocator, blk2);
+                var blk_iter2 = try BlockIterator.createAndSeekToFirst(allocator, blk2.clone());
                 errdefer blk_iter2.deinit();
 
                 return .{
                     .blk_idx = blk_idx,
-                    .blk_iter = blk_iter2,
+                    .blk_iter = try BlockIteratorPtr.create(allocator, blk_iter2),
                     .blk = blk2,
                 };
             }
         }
         return .{
             .blk_idx = blk_idx,
-            .blk_iter = blk_iter,
+            .blk_iter = blk_iter_ptr,
             .blk = blk,
         };
     }
@@ -575,31 +597,33 @@ pub const SsTableIterator = struct {
     }
 
     pub fn key(self: Self) []const u8 {
-        return self.blk_iterator.key();
+        return self.blk_iterator.get().key();
     }
 
     pub fn value(self: Self) []const u8 {
-        return self.blk_iterator.value();
+        return self.blk_iterator.get().value();
     }
 
     pub fn isEmpty(self: Self) bool {
-        return self.blk_iterator.isEmpty();
+        return self.blk_iterator.get().isEmpty();
     }
 
     pub fn next(self: *Self) void {
-        self.blk_iterator.next();
-        if (self.blk_iterator.isEmpty()) {
+        self.blk_iterator.get().next();
+        if (self.blk_iterator.get().isEmpty()) {
             self.blk_idx += 1;
-            if (self.blk_idx < self.table.numBlocks()) {
+            if (self.blk_idx < self.table.get().numBlocks()) {
                 self.reset();
-                const blk = self.table.readBlockCached(self.blk_idx, self.allocator) catch {
+                const blk = self.table.get().readBlockCached(self.blk_idx, self.allocator) catch {
                     std.debug.panic("read block failed", .{});
                 };
-                const blk_iter = BlockIterator.createAndSeekToFirst(self.allocator, blk) catch {
+                const blk_iter = BlockIterator.createAndSeekToFirst(self.allocator, blk.clone()) catch {
                     std.debug.panic("create block iterator failed", .{});
                 };
                 self.blk = blk;
-                self.blk_iterator = blk_iter;
+                self.blk_iterator = BlockIteratorPtr.create(self.allocator, blk_iter) catch {
+                    std.debug.panic("create block iterator ptr failed", .{});
+                };
             }
         }
     }
@@ -732,8 +756,10 @@ test "read block cached" {
     }
 
     var cache = try BlockCache.init(std.testing.allocator, 1024);
-    defer cache.deinit();
-    var tb = try sb.build(1, &cache, "./tmp/ss_cache.sst");
+    errdefer cache.deinit();
+    var cache_ptr = try BlockCachePtr.create(std.testing.allocator, cache);
+    defer cache_ptr.release();
+    var tb = try sb.build(1, cache_ptr.clone(), "./tmp/ss_cache.sst");
     defer tb.deinit();
 
     const allocator = std.testing.allocator;
@@ -744,7 +770,7 @@ test "read block cached" {
         var b = try tb.readBlockCached(some_random_num, allocator);
         defer b.deinit();
 
-        const fk = try b.getFirstKey(allocator);
+        const fk = try b.get().getFirstKey(allocator);
         defer allocator.free(fk);
         std.debug.print("first key: {s}\n", .{fk});
     }
@@ -768,11 +794,16 @@ test "iterator" {
     }
 
     var cache = try BlockCache.init(std.testing.allocator, 1024);
-    defer cache.deinit();
-    var tb = try sb.build(1, &cache, "./tmp/ss_iter.sst");
-    defer tb.deinit();
+    errdefer cache.deinit();
+    var cache_ptr = try BlockCachePtr.create(std.testing.allocator, cache);
+    defer cache_ptr.release();
 
-    var iter = try SsTableIterator.initAndSeekToFirst(std.testing.allocator, &tb);
+    var tb = try sb.build(1, cache_ptr, "./tmp/ss_iter.sst");
+    errdefer tb.deinit();
+    var tb_ptr = try SsTablePtr.create(std.testing.allocator, tb);
+    defer tb_ptr.release();
+
+    var iter = try SsTableIterator.initAndSeekToFirst(std.testing.allocator, tb_ptr.clone());
     defer iter.deinit();
 
     std.debug.print("------------------ iter begin -----------------\n", .{});
@@ -782,7 +813,7 @@ test "iterator" {
     }
     std.debug.print("------------------ iter end -----------------\n", .{});
 
-    var iter2 = try SsTableIterator.initAndSeekToKey(std.testing.allocator, &tb, "key00030");
+    var iter2 = try SsTableIterator.initAndSeekToKey(std.testing.allocator, tb_ptr.clone(), "key00030");
     defer iter2.deinit();
 
     std.debug.print("------------------ iter begin -----------------\n", .{});
