@@ -328,7 +328,7 @@ pub const StorageInner = struct {
             old_mm = old_mm_ptr.get();
             defer old_mm_ptr.release();
             self.state.mem_table = try MemTablePtr.create(self.allocator, new_mm);
-            try self.state.imm_mem_tables.insert(0, old_mm_ptr.clone());
+            try self.state.imm_mem_tables.append(old_mm_ptr.clone()); // newer memtable is inserted at the end
         }
         try old_mm.syncWal();
     }
@@ -376,6 +376,7 @@ pub const StorageInner = struct {
     }
 
     pub fn scan(self: *Self, lower: Bound, upper: Bound) !LsmIterator {
+        // memtable iters are sorted, newest memtable at the end
         var memtable_iters = std.ArrayList(StorageIteratorPtr).init(self.allocator);
         defer memtable_iters.deinit();
 
@@ -466,7 +467,8 @@ pub const StorageInner = struct {
         {
             self.state_lock.lockShared();
             defer self.state_lock.unlockShared();
-            to_flush_table = self.state.imm_mem_tables.getLast().load();
+            // oldest memtable is at the index 0
+            to_flush_table = self.state.imm_mem_tables.items[0].load();
         }
 
         var builder = try SsTableBuilder.init(self.allocator, self.options.block_size);
@@ -485,10 +487,12 @@ pub const StorageInner = struct {
             self.state_lock.lock();
             defer self.state_lock.unlock();
 
-            var m = self.state.imm_mem_tables.pop();
+            var m = self.state.imm_mem_tables.orderedRemove(0);
             defer m.deinit();
             std.debug.assert(m.load().id == sst_id);
-            try self.state.l0_sstables.insert(0, sst_id);
+
+            // newest sstable is at the end
+            try self.state.l0_sstables.append(sst_id);
             try self.state.sstables.put(sst.id, try SsTablePtr.create(self.allocator, sst));
         }
     }
