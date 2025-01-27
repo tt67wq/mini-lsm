@@ -191,17 +191,6 @@ pub const Block = struct {
 
         return Block.init(data_v, offset_v);
     }
-
-    pub fn clone(self: Block, allocator: std.mem.Allocator) !Block {
-        var data_v = std.ArrayList(u8).init(allocator);
-        try data_v.writer().writeAll(self.data_v.items);
-        var offset_v = std.ArrayList(u16).init(allocator);
-        try offset_v.appendSlice(self.offset_v.items);
-        return Block.init(
-            data_v,
-            offset_v,
-        );
-    }
 };
 
 pub const BlockIteratorPtr = smart_pointer.SmartPointer(BlockIterator);
