@@ -5,15 +5,18 @@ const MergeIterators = @import("MergeIterators.zig");
 const ss_table = @import("ss_table.zig");
 const atomic = std.atomic;
 const Bound = MemTable.Bound;
+const MemTablePtr = MemTable.MemTablePtr;
 const MemTableIterator = MemTable.MemTableIterator;
 const StorageIterator = iterators.StorageIterator;
 const StorageIteratorPtr = iterators.StorageIteratorPtr;
 const LsmIterator = iterators.LsmIterator;
 const TwoMergeIterator = iterators.TwoMergeIterator;
 const SsTable = ss_table.SsTable;
+const SsTablePtr = ss_table.SsTablePtr;
 const SsTableIterator = ss_table.SsTableIterator;
 const SsTableBuilder = ss_table.SsTableBuilder;
 const BlockCache = ss_table.BlockCache;
+const BlockCachePtr = ss_table.BlockCachePtr;
 
 pub const StorageOptions = struct {
     block_size: usize,
@@ -24,36 +27,32 @@ pub const StorageOptions = struct {
 
 pub const StorageState = struct {
     allocator: std.mem.Allocator,
-    mem_table: atomic.Value(*MemTable),
-    imm_mem_tables: std.ArrayList(*MemTable),
+    mem_table: MemTablePtr,
+    imm_mem_tables: std.ArrayList(MemTablePtr),
     l0_sstables: std.ArrayList(usize),
-    sstables: std.AutoHashMap(usize, *SsTable),
+    sstables: std.AutoHashMap(usize, SsTablePtr),
 
-    pub fn init(allocator: std.mem.Allocator, _: StorageOptions) StorageState {
-        const mm = allocator.create(MemTable) catch unreachable;
-        mm.* = MemTable.init(0, allocator, null);
+    pub fn init(allocator: std.mem.Allocator, _: StorageOptions) !StorageState {
+        var mm = MemTable.init(0, allocator, null);
+        errdefer mm.deinit();
         return StorageState{
             .allocator = allocator,
-            .mem_table = atomic.Value(*MemTable).init(mm),
-            .imm_mem_tables = std.ArrayList(*MemTable).init(allocator),
+            .mem_table = try MemTablePtr.create(allocator, mm),
+            .imm_mem_tables = std.ArrayList(MemTablePtr).init(allocator),
             .l0_sstables = std.ArrayList(usize).init(allocator),
-            .sstables = std.AutoHashMap(usize, *SsTable).init(allocator),
+            .sstables = std.AutoHashMap(usize, SsTablePtr).init(allocator),
         };
     }
 
     pub fn deinit(self: *StorageState) void {
         // free mem_table
-        {
-            var mm = self.getMemTable();
-            mm.deinit();
-            self.allocator.destroy(mm);
-        }
+        self.mem_table.release();
+
         // free imm_mem_tables
         {
             for (self.imm_mem_tables.items) |m| {
                 var imm_table = m;
                 imm_table.deinit();
-                self.allocator.destroy(imm_table);
             }
             self.imm_mem_tables.deinit();
         }
@@ -65,8 +64,7 @@ pub const StorageState = struct {
             var vi = self.sstables.valueIterator();
             while (true) {
                 if (vi.next()) |e| {
-                    e.*.deinit();
-                    self.allocator.destroy(e.*);
+                    e.release();
                 } else {
                     break;
                 }
@@ -75,8 +73,8 @@ pub const StorageState = struct {
         }
     }
 
-    pub fn getMemTable(self: *StorageState) *MemTable {
-        return self.mem_table.load(.seq_cst);
+    pub fn getMemTable(self: StorageState) *MemTable {
+        return self.mem_table.get();
     }
 };
 
@@ -97,16 +95,15 @@ pub const StorageInner = struct {
     next_sst_id: atomic.Value(usize),
     path: []const u8,
     options: StorageOptions,
-    block_cache: *BlockCache,
+    block_cache: BlockCachePtr,
     terminate: std.Thread.ResetEvent = .{},
     wg: std.Thread.WaitGroup = .{},
 
     pub fn init(allocator: std.mem.Allocator, path: []const u8, options: StorageOptions) !Self {
-        var state = StorageState.init(allocator, options);
+        var state = try StorageState.init(allocator, options);
         const next_sst_id: usize = 0;
         // cache
-        const cache = try allocator.create(BlockCache);
-        cache.* = try BlockCache.init(allocator, 1 << 20); // 4G
+        var cache = try BlockCache.init(allocator, 1 << 20); // 4G
         errdefer cache.deinit();
 
         // manifest
@@ -119,7 +116,7 @@ pub const StorageInner = struct {
         var manifest_file_exists = true;
         std.fs.cwd().access(manifest_path, .{}) catch |err| switch (err) {
             error.FileNotFound => manifest_file_exists = false,
-            else => unreachable,
+            else => return err,
         };
 
         if (manifest_file_exists) {
@@ -129,11 +126,10 @@ pub const StorageInner = struct {
             if (options.enable_wal) {
                 const wal_path = try pathOfWal(allocator, path, next_sst_id);
                 defer allocator.free(wal_path);
-                const new_mm = try allocator.create(MemTable);
-                new_mm.* = MemTable.init(next_sst_id, allocator, wal_path);
-                var old_mm = state.mem_table.swap(new_mm, .seq_cst);
-                old_mm.deinit();
-                allocator.destroy(old_mm);
+                var new_mm = MemTable.init(next_sst_id, allocator, wal_path);
+                errdefer new_mm.deinit();
+                state.mem_table.release();
+                state.mem_table = try MemTablePtr.create(allocator, new_mm);
             }
         }
         return Self{
@@ -142,7 +138,7 @@ pub const StorageInner = struct {
             .state = state,
             .next_sst_id = atomic.Value(usize).init(next_sst_id + 1),
             .options = options,
-            .block_cache = cache,
+            .block_cache = try BlockCachePtr.create(allocator, cache),
         };
     }
 
@@ -156,7 +152,6 @@ pub const StorageInner = struct {
 
         // free block_cache
         self.block_cache.deinit();
-        self.allocator.destroy(self.block_cache);
     }
 
     pub fn syncDir(self: Self) !void {
@@ -218,7 +213,7 @@ pub const StorageInner = struct {
             self.state_lock.lockShared();
             defer self.state_lock.unlockShared();
             for (self.state.imm_mem_tables.items) |imm_table| {
-                if (try imm_table.get(key, value)) {
+                if (try imm_table.load().get(key, value)) {
                     if (value.*.len == 0) {
                         // tomestone
                         return false;
@@ -229,11 +224,11 @@ pub const StorageInner = struct {
         }
 
         // search in l0_sstables
-        var iters = std.ArrayList(StorageIterator).init(self.allocator);
+        var iters = std.ArrayList(StorageIteratorPtr).init(self.allocator);
         defer {
             for (iters.items) |iter| {
                 var ii = iter;
-                ii.deinit();
+                ii.release();
             }
             iters.deinit();
         }
@@ -242,10 +237,10 @@ pub const StorageInner = struct {
             defer self.state_lock.unlockShared();
             for (self.state.l0_sstables.items) |sst_id| {
                 const sst = self.state.sstables.get(sst_id).?;
-                if (try sst.*.mayContain(key)) {
-                    var ss_iter = try SsTableIterator.initAndSeekToKey(self.allocator, sst, key);
+                if (try sst.load().mayContain(key)) {
+                    var ss_iter = try SsTableIterator.initAndSeekToKey(self.allocator, sst.clone(), key);
                     errdefer ss_iter.deinit();
-                    try iters.append(.{ .ss_table_iter = ss_iter });
+                    try iters.append(try StorageIteratorPtr.create(self.allocator, .{ .ss_table_iter = ss_iter }));
                 }
             }
         }
@@ -313,24 +308,27 @@ pub const StorageInner = struct {
 
     fn forceFreezeMemtable(self: *Self) !void {
         const next_sst_id = self.get_next_sst_id();
-        const new_mm = try self.allocator.create(MemTable);
-        errdefer self.allocator.destroy(new_mm);
+        var new_mm: MemTable = undefined;
         {
             if (self.options.enable_wal) {
                 const mm_path = try pathOfWal(self.allocator, self.path, next_sst_id);
                 defer self.allocator.free(mm_path);
-                new_mm.* = MemTable.init(next_sst_id, self.allocator, mm_path);
+                new_mm = MemTable.init(next_sst_id, self.allocator, mm_path);
             } else {
-                new_mm.* = MemTable.init(next_sst_id, self.allocator, null);
+                new_mm = MemTable.init(next_sst_id, self.allocator, null);
             }
         }
         errdefer new_mm.deinit();
+
         var old_mm: *MemTable = undefined;
         {
             self.state_lock.lock();
             defer self.state_lock.unlock();
-            old_mm = self.state.mem_table.swap(new_mm, .seq_cst);
-            try self.state.imm_mem_tables.insert(0, old_mm);
+            var old_mm_ptr = self.state.mem_table;
+            old_mm = old_mm_ptr.get();
+            defer old_mm_ptr.release();
+            self.state.mem_table = try MemTablePtr.create(self.allocator, new_mm);
+            try self.state.imm_mem_tables.insert(0, old_mm_ptr.clone());
         }
         try old_mm.syncWal();
     }
