@@ -5,7 +5,9 @@ const MergeIterators = @import("MergeIterators.zig");
 const smart_pointer = @import("smart_pointer.zig");
 const Bound = @import("MemTable.zig").Bound;
 const MemTableIterator = MemTable.MemTableIterator;
+const SsTablePtr = ss_table.SsTablePtr;
 const SsTableIterator = ss_table.SsTableIterator;
+// const SsTableIteratorPtr = ss_table.SsTableIteratorPtr;
 
 pub const StorageIteratorPtr = smart_pointer.SmartPointer(StorageIterator);
 
@@ -200,5 +202,130 @@ pub const LsmIterator = struct {
 
     pub fn numActiveIterators(self: LsmIterator) usize {
         return self.inner.numActiveIterators();
+    }
+};
+
+pub const SstConcatIterator = struct {
+    current: ?SsTableIterator,
+    next_sst_idx: usize,
+    sstables: std.ArrayList(SsTablePtr),
+
+    const Self = @This();
+
+    pub fn deinit(self: *Self) void {
+        if (self.current) |_| {
+            self.current.?.deinit();
+        }
+
+        for (self.sstables.items) |sst| {
+            sst.deinit();
+        }
+        self.sstables.deinit();
+    }
+
+    fn checkSstValid(sstables: std.ArrayList(SsTablePtr)) void {
+        for (sstables.items) |sst| {
+            const fk = sst.get().first_key;
+            const lk = sst.get().last_key;
+            std.debug.assert(std.mem.lessThan(u8, fk, lk) or std.mem.eql(u8, fk, lk));
+        }
+        if (sstables.items.len > 2) {
+            for (0..sstables.items.len - 2) |idx| {
+                std.debug.assert(
+                    std.mem.lessThan(u8, sstables.items[idx].get().last_key, sstables.items[idx + 1].get().first_key),
+                );
+            }
+        }
+    }
+
+    pub fn initAndSeekToFirst(allocator: std.mem.Allocator, sstables: std.ArrayList(SsTablePtr)) !Self {
+        checkSstValid(sstables);
+        if (sstables.items.len == 0) {
+            return .{
+                .current = null,
+                .next_sst_idx = 0,
+                .sstables = sstables,
+            };
+        }
+
+        var ss_iter = try SsTableIterator.initAndSeekToFirst(allocator, sstables.items[0].clone());
+        errdefer ss_iter.deinit();
+
+        var iter = Self{
+            .current = ss_iter,
+            .next_sst_idx = 1,
+            .sstables = sstables,
+        };
+        try iter.moveUntilValid();
+        return iter;
+    }
+
+    pub fn initAndSeekToKey(allocator: std.mem.Allocator, sstables: std.ArrayList(SsTablePtr), key: []const u8) !Self {
+        checkSstValid(sstables);
+        if (sstables.items.len == 0) {
+            return .{
+                .current = null,
+                .next_sst_idx = 0,
+                .sstables = sstables,
+            };
+        }
+        // binary search
+        var index: usize = 0;
+        {
+            var left: usize = 0;
+            var right: usize = sstables.items.len - 1;
+            while (left <= right) {
+                const mid = left + (right - left) / 2;
+                const sst = sstables.items[mid].get();
+                const fk = sst.first_key;
+                const lk = sst.last_key;
+
+                if (std.mem.lessThan(u8, key, fk)) {
+                    right = mid - 1;
+                } else if (std.mem.lessThan(u8, lk, key)) {
+                    left = mid + 1;
+                } else {
+                    index = mid;
+                    break;
+                }
+            }
+            // not found
+            index = sstables.items.len;
+        }
+        if (index >= sstables.items.len) {
+            return .{
+                .current = null,
+                .next_sst_idx = sstables.items.len,
+                .sstables = sstables,
+            };
+        }
+        var ss_iter = try SsTableIterator.initAndSeekToKey(allocator, sstables.items[index].clone(), key);
+        errdefer ss_iter.deinit();
+
+        var iter = Self{
+            .current = ss_iter,
+            .next_sst_idx = index + 1,
+            .sstables = sstables,
+        };
+
+        try iter.moveUntilValid();
+        return iter;
+    }
+
+    fn moveUntilValid(self: *Self) !void {
+        while (self.current) |iter| {
+            if (!iter.isEmpty()) {
+                return;
+            }
+            // current is empty
+            self.current.?.deinit();
+            if (self.next_sst_idx >= self.sstables.items.len) {
+                self.current = null;
+            } else {
+                const ss_iter = try SsTableIterator.initAndSeekToFirst(self.sstables.items[self.next_sst_idx].clone());
+                self.current = ss_iter;
+                self.next_sst_idx += 1;
+            }
+        }
     }
 };
