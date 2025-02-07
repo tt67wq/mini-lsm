@@ -3,6 +3,7 @@ const MemTable = @import("MemTable.zig");
 const iterators = @import("iterators.zig");
 const MergeIterators = @import("MergeIterators.zig");
 const ss_table = @import("ss_table.zig");
+const compact = @import("compact.zig");
 const atomic = std.atomic;
 const Bound = MemTable.Bound;
 const MemTablePtr = MemTable.MemTablePtr;
@@ -17,12 +18,15 @@ const SsTableIterator = ss_table.SsTableIterator;
 const SsTableBuilder = ss_table.SsTableBuilder;
 const BlockCache = ss_table.BlockCache;
 const BlockCachePtr = ss_table.BlockCachePtr;
+const CompactionTask = compact.CompactionTask;
+const ForceFullCompaction = compact.ForceFullCompaction;
 
 pub const StorageOptions = struct {
     block_size: usize,
     target_sst_size: usize,
     num_memtable_limit: usize,
     enable_wal: bool,
+    compaction_options: compact.CompactionOptions,
 };
 
 pub const StorageState = struct {
@@ -30,16 +34,26 @@ pub const StorageState = struct {
     mem_table: MemTablePtr,
     imm_mem_tables: std.ArrayList(MemTablePtr),
     l0_sstables: std.ArrayList(usize),
+    levels: std.ArrayList(std.ArrayList(usize)),
     sstables: std.AutoHashMap(usize, SsTablePtr),
 
-    pub fn init(allocator: std.mem.Allocator, _: StorageOptions) !StorageState {
+    pub fn init(allocator: std.mem.Allocator, options: StorageOptions) !StorageState {
         var mm = MemTable.init(0, allocator, null);
         errdefer mm.deinit();
+
+        var levels = std.ArrayList(std.ArrayList(usize)).init(allocator);
+        switch (options.compaction_options) {
+            .no_compaction => {
+                const lv1 = std.ArrayList(usize).init(allocator);
+                try levels.append(lv1);
+            },
+        }
         return StorageState{
             .allocator = allocator,
             .mem_table = try MemTablePtr.create(allocator, mm),
             .imm_mem_tables = std.ArrayList(MemTablePtr).init(allocator),
             .l0_sstables = std.ArrayList(usize).init(allocator),
+            .levels = levels,
             .sstables = std.AutoHashMap(usize, SsTablePtr).init(allocator),
         };
     }
@@ -517,6 +531,63 @@ pub const StorageInner = struct {
 
     pub fn spawnCompactionThread(self: *Self) void {
         self.wg.spawnManager(self.flushLoop, .{});
+    }
+
+    pub fn forceFullCompaction(self: *Self) !void {
+        if (!self.options.compaction_options.is_no_compaction()) {
+            @panic("full compaction can only be called with compaction is not enabled");
+        }
+
+        var l0_sstables: std.ArrayList(usize) = undefined;
+        var l1_sstables: std.ArrayList(usize) = undefined;
+        {
+            self.state_lock.lockShared();
+            defer self.state_lock.unlockShared();
+            l0_sstables = try self.state.l0_sstables.clone();
+            errdefer l0_sstables.deinit();
+            l1_sstables = try self.state.levels.getLast().clone();
+            errdefer l1_sstables.deinit();
+        }
+
+        var compation_task = CompactionTask{
+            .force_full_compaction = .{
+                .l0_sstables = l0_sstables,
+                .l1_sstables = l1_sstables,
+            },
+        };
+        defer compation_task.deinit();
+
+        try self.compact(compation_task);
+    }
+
+    fn compact(self: *Self, task: CompactionTask) !void {
+        switch (task) {
+            .force_full_compaction => |f| {
+                try self.compactForceFull(f);
+            },
+        }
+    }
+
+    fn compactForceFull(self: *Self, f: ForceFullCompaction) !void {
+        const l0_sstables = f.l0_sstables;
+        // const l1_sstables = f.l1_sstables;
+
+        var l0_iters = try std.ArrayList(StorageIteratorPtr).initCapacity(self.allocator, l0_sstables.items.len);
+        errdefer l0_iters.deinit();
+
+        for (l0_sstables.items) |sst_id| {
+            self.state_lock.lockShared();
+            const sst = self.state.sstables.get(sst_id).?;
+            self.state_lock.unlockShared();
+            var ss_iter = try SsTableIterator.initAndSeekToFirst(self.allocator, sst);
+            errdefer ss_iter.deinit();
+            const sp = try StorageIteratorPtr.create(self.allocator, .{
+                .ss_table_iter = ss_iter,
+            });
+            try l0_iters.append(sp);
+        }
+
+        // var l1_iters = try std.ArrayList(SsTableIterator).initCapacity(self.allocator, l1_sstables.items.len);
     }
 };
 
