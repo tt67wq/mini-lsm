@@ -8,18 +8,14 @@ const MemTableIterator = MemTable.MemTableIterator;
 const SsTablePtr = ss_table.SsTablePtr;
 const SsTableIterator = ss_table.SsTableIterator;
 
-pub const MergeIteratorsPtr = smart_pointer.SmartPointer(MergeIterators);
-
 pub const StorageIteratorPtr = smart_pointer.SmartPointer(StorageIterator);
 pub const StorageIterator = union(enum) {
     mem_iter: MemTableIterator,
     ss_table_iter: SsTableIterator,
-    sst_concat_iter: SstConcatIterator,
 
     pub fn deinit(self: *StorageIterator) void {
         switch (self.*) {
             .ss_table_iter => self.ss_table_iter.deinit(),
-            .sst_concat_iter => self.sst_concat_iter.deinit(),
             inline else => {},
         }
     }
@@ -34,7 +30,6 @@ pub const StorageIterator = union(enum) {
         switch (self.*) {
             .mem_iter => self.mem_iter.next(),
             .ss_table_iter => try self.ss_table_iter.next(),
-            .sst_concat_iter => try self.sst_concat_iter.next(),
         }
     }
 
@@ -55,12 +50,57 @@ pub const StorageIterator = union(enum) {
     }
 };
 
+pub const CombinedIteratorPtr = smart_pointer.SmartPointer(CombinedIterator);
+
+pub const CombinedIterator = union(enum) {
+    storage_iter: StorageIterator,
+    merge_iterators: MergeIterators,
+    sst_concat_iter: SstConcatIterator,
+
+    pub fn deinit(self: *CombinedIterator) void {
+        switch (self.*) {
+            .merge_iterators => self.merge_iterators.deinit(),
+            .storage_iter => self.storage_iter.deinit(),
+            .sst_concat_iter => self.sst_concat_iter.deinit(),
+        }
+    }
+
+    pub fn isEmpty(self: CombinedIterator) bool {
+        switch (self) {
+            inline else => |impl| return impl.isEmpty(),
+        }
+    }
+    pub fn next(self: *CombinedIterator) !void {
+        switch (self.*) {
+            .merge_iterators => try self.merge_iterators.next(),
+            .storage_iter => try self.storage_iter.next(),
+            .sst_concat_iter => try self.sst_concat_iter.next(),
+        }
+    }
+    pub fn key(self: CombinedIterator) []const u8 {
+        switch (self) {
+            inline else => |impl| return impl.key(),
+        }
+    }
+    pub fn value(self: CombinedIterator) []const u8 {
+        switch (self) {
+            inline else => |impl| return impl.value(),
+        }
+    }
+
+    pub fn numActiveIterators(self: CombinedIterator) usize {
+        switch (self) {
+            inline else => |impl| return impl.numActiveIterators(),
+        }
+    }
+};
+
 pub const TwoMergeIterator = struct {
-    a: MergeIteratorsPtr,
-    b: MergeIteratorsPtr,
+    a: CombinedIteratorPtr,
+    b: CombinedIteratorPtr,
     choose_a: bool,
 
-    fn chooseA(a: *MergeIterators, b: *MergeIterators) bool {
+    fn chooseA(a: *CombinedIterator, b: *CombinedIterator) bool {
         if (a.isEmpty()) {
             return false;
         }
@@ -76,7 +116,7 @@ pub const TwoMergeIterator = struct {
         if (!ap.isEmpty() and !bp.isEmpty() and std.mem.eql(u8, ap.key(), bp.key())) try bp.next();
     }
 
-    pub fn init(a: MergeIteratorsPtr, b: MergeIteratorsPtr) !TwoMergeIterator {
+    pub fn init(a: CombinedIteratorPtr, b: CombinedIteratorPtr) !TwoMergeIterator {
         var iter = TwoMergeIterator{
             .a = a,
             .b = b,
@@ -353,5 +393,9 @@ pub const SstConcatIterator = struct {
     pub fn next(self: *Self) !void {
         try self.current.?.next();
         try self.moveUntilValid();
+    }
+
+    pub fn numActiveIterators(_: Self) usize {
+        return 1;
     }
 };
