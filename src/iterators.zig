@@ -7,19 +7,19 @@ const Bound = @import("MemTable.zig").Bound;
 const MemTableIterator = MemTable.MemTableIterator;
 const SsTablePtr = ss_table.SsTablePtr;
 const SsTableIterator = ss_table.SsTableIterator;
-// const SsTableIteratorPtr = ss_table.SsTableIteratorPtr;
+
+pub const MergeIteratorsPtr = smart_pointer.SmartPointer(MergeIterators);
 
 pub const StorageIteratorPtr = smart_pointer.SmartPointer(StorageIterator);
-
 pub const StorageIterator = union(enum) {
     mem_iter: MemTableIterator,
     ss_table_iter: SsTableIterator,
-    merge_iter: MergeIterators,
+    sst_concat_iter: SstConcatIterator,
 
     pub fn deinit(self: *StorageIterator) void {
         switch (self.*) {
             .ss_table_iter => self.ss_table_iter.deinit(),
-            .merge_iter => self.merge_iter.deinit(),
+            .sst_concat_iter => self.sst_concat_iter.deinit(),
             inline else => {},
         }
     }
@@ -30,11 +30,11 @@ pub const StorageIterator = union(enum) {
         }
     }
 
-    pub fn next(self: *StorageIterator) void {
+    pub fn next(self: *StorageIterator) !void {
         switch (self.*) {
             .mem_iter => self.mem_iter.next(),
-            .ss_table_iter => self.ss_table_iter.next(),
-            .merge_iter => self.merge_iter.next(),
+            .ss_table_iter => try self.ss_table_iter.next(),
+            .sst_concat_iter => try self.sst_concat_iter.next(),
         }
     }
 
@@ -50,21 +50,17 @@ pub const StorageIterator = union(enum) {
         }
     }
 
-    pub fn numActiveIterators(self: StorageIterator) usize {
-        switch (self) {
-            .merge_iter => return self.merge_iter.numActiveIterators(),
-            inline else => {},
-        }
+    pub fn numActiveIterators(_: StorageIterator) usize {
         return 1;
     }
 };
 
 pub const TwoMergeIterator = struct {
-    a: StorageIteratorPtr,
-    b: StorageIteratorPtr,
+    a: MergeIteratorsPtr,
+    b: MergeIteratorsPtr,
     choose_a: bool,
 
-    fn chooseA(a: *StorageIterator, b: *StorageIterator) bool {
+    fn chooseA(a: *MergeIterators, b: *MergeIterators) bool {
         if (a.isEmpty()) {
             return false;
         }
@@ -74,19 +70,19 @@ pub const TwoMergeIterator = struct {
         return std.mem.lessThan(u8, a.key(), b.key());
     }
 
-    fn skipB(self: *TwoMergeIterator) void {
+    fn skipB(self: *TwoMergeIterator) !void {
         const ap = self.a.load();
         const bp = self.b.load();
-        if (!ap.isEmpty() and !bp.isEmpty() and std.mem.eql(u8, ap.key(), bp.key())) bp.next();
+        if (!ap.isEmpty() and !bp.isEmpty() and std.mem.eql(u8, ap.key(), bp.key())) try bp.next();
     }
 
-    pub fn init(a: StorageIteratorPtr, b: StorageIteratorPtr) TwoMergeIterator {
+    pub fn init(a: MergeIteratorsPtr, b: MergeIteratorsPtr) !TwoMergeIterator {
         var iter = TwoMergeIterator{
             .a = a,
             .b = b,
             .choose_a = false,
         };
-        iter.skipB();
+        try iter.skipB();
         iter.choose_a = chooseA(iter.a.load(), iter.b.load());
         return iter;
     }
@@ -121,13 +117,13 @@ pub const TwoMergeIterator = struct {
         return self.b.load().isEmpty();
     }
 
-    pub fn next(self: *TwoMergeIterator) void {
+    pub fn next(self: *TwoMergeIterator) !void {
         if (self.choose_a) {
-            self.a.load().next();
+            try self.a.load().next();
         } else {
-            self.b.load().next();
+            try self.b.load().next();
         }
-        self.skipB();
+        try self.skipB();
         self.choose_a = chooseA(self.a.load(), self.b.load());
     }
 
@@ -158,8 +154,8 @@ pub const LsmIterator = struct {
         self.inner.deinit();
     }
 
-    fn nextInner(self: *LsmIterator) void {
-        self.inner.next();
+    fn nextInner(self: *LsmIterator) !void {
+        try self.inner.next();
         if (self.inner.isEmpty()) {
             self.is_empty = true;
             return;
@@ -177,15 +173,15 @@ pub const LsmIterator = struct {
         return;
     }
 
-    fn moveToNoneDelete(self: *LsmIterator) void {
+    fn moveToNoneDelete(self: *LsmIterator) !void {
         while (!self.isEmpty() and self.inner.value().len == 0) {
-            self.nextInner();
+            try self.nextInner();
         }
     }
 
-    pub fn next(self: *LsmIterator) void {
-        self.nextInner();
-        self.moveToNoneDelete();
+    pub fn next(self: *LsmIterator) !void {
+        try self.nextInner();
+        try self.moveToNoneDelete();
     }
 
     pub fn isEmpty(self: LsmIterator) bool {
@@ -206,6 +202,7 @@ pub const LsmIterator = struct {
 };
 
 pub const SstConcatIterator = struct {
+    allocator: std.mem.Allocator,
     current: ?SsTableIterator,
     next_sst_idx: usize,
     sstables: std.ArrayList(SsTablePtr),
@@ -218,7 +215,8 @@ pub const SstConcatIterator = struct {
         }
 
         for (self.sstables.items) |sst| {
-            sst.deinit();
+            var p = sst;
+            p.deinit();
         }
         self.sstables.deinit();
     }
@@ -242,6 +240,7 @@ pub const SstConcatIterator = struct {
         checkSstValid(sstables);
         if (sstables.items.len == 0) {
             return .{
+                .allocator = allocator,
                 .current = null,
                 .next_sst_idx = 0,
                 .sstables = sstables,
@@ -252,6 +251,7 @@ pub const SstConcatIterator = struct {
         errdefer ss_iter.deinit();
 
         var iter = Self{
+            .allocator = allocator,
             .current = ss_iter,
             .next_sst_idx = 1,
             .sstables = sstables,
@@ -260,10 +260,11 @@ pub const SstConcatIterator = struct {
         return iter;
     }
 
-    pub fn initAndSeekToKey(allocator: std.mem.Allocator, sstables: std.ArrayList(SsTablePtr), key: []const u8) !Self {
+    pub fn initAndSeekToKey(allocator: std.mem.Allocator, sstables: std.ArrayList(SsTablePtr), k: []const u8) !Self {
         checkSstValid(sstables);
         if (sstables.items.len == 0) {
             return .{
+                .allocator = allocator,
                 .current = null,
                 .next_sst_idx = 0,
                 .sstables = sstables,
@@ -280,9 +281,9 @@ pub const SstConcatIterator = struct {
                 const fk = sst.first_key;
                 const lk = sst.last_key;
 
-                if (std.mem.lessThan(u8, key, fk)) {
+                if (std.mem.lessThan(u8, k, fk)) {
                     right = mid - 1;
-                } else if (std.mem.lessThan(u8, lk, key)) {
+                } else if (std.mem.lessThan(u8, lk, k)) {
                     left = mid + 1;
                 } else {
                     index = mid;
@@ -294,15 +295,17 @@ pub const SstConcatIterator = struct {
         }
         if (index >= sstables.items.len) {
             return .{
+                .allocator = allocator,
                 .current = null,
                 .next_sst_idx = sstables.items.len,
                 .sstables = sstables,
             };
         }
-        var ss_iter = try SsTableIterator.initAndSeekToKey(allocator, sstables.items[index].clone(), key);
+        var ss_iter = try SsTableIterator.initAndSeekToKey(allocator, sstables.items[index].clone(), k);
         errdefer ss_iter.deinit();
 
         var iter = Self{
+            .allocator = allocator,
             .current = ss_iter,
             .next_sst_idx = index + 1,
             .sstables = sstables,
@@ -322,10 +325,33 @@ pub const SstConcatIterator = struct {
             if (self.next_sst_idx >= self.sstables.items.len) {
                 self.current = null;
             } else {
-                const ss_iter = try SsTableIterator.initAndSeekToFirst(self.sstables.items[self.next_sst_idx].clone());
+                const ss_iter = try SsTableIterator.initAndSeekToFirst(
+                    self.allocator,
+                    self.sstables.items[self.next_sst_idx].clone(),
+                );
                 self.current = ss_iter;
                 self.next_sst_idx += 1;
             }
         }
+    }
+
+    pub fn isEmpty(self: Self) bool {
+        if (self.current) |iter| {
+            return iter.isEmpty();
+        }
+        return true;
+    }
+
+    pub fn key(self: Self) []const u8 {
+        return self.current.?.key();
+    }
+
+    pub fn value(self: Self) []const u8 {
+        return self.current.?.value();
+    }
+
+    pub fn next(self: *Self) !void {
+        try self.current.?.next();
+        try self.moveUntilValid();
     }
 };

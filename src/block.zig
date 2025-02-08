@@ -247,11 +247,9 @@ pub const BlockIterator = struct {
         return self.key_v.items.len == 0;
     }
 
-    pub fn next(self: *Self) void {
+    pub fn next(self: *Self) !void {
         self.idx += 1;
-        self.seekTo(self.idx) catch {
-            std.debug.panic("seekTo {d} failed", .{self.idx});
-        };
+        try self.seekTo(self.idx);
     }
 
     fn seekToFirst(self: *Self) !void {
