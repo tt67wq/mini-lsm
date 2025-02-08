@@ -21,8 +21,8 @@ const HeapWrapper = struct {
         return self.ee.get().isEmpty();
     }
 
-    pub fn next(self: *HeapWrapper) void {
-        self.ee.get().next();
+    pub fn next(self: *HeapWrapper) !void {
+        try self.ee.get().next();
     }
 
     pub fn key(self: HeapWrapper) []const u8 {
@@ -128,13 +128,13 @@ pub fn isEmpty(self: Self) bool {
     return true;
 }
 
-pub fn next(self: *Self) void {
+pub fn next(self: *Self) !void {
     const cc = self.current.?;
     while (true) {
         if (self.q.peek()) |ii| {
             std.debug.assert(!ii.isEmpty());
             if (std.mem.eql(u8, cc.key(), ii.key())) {
-                ii.next();
+                try ii.next();
                 if (ii.isEmpty()) {
                     _ = self.q.remove();
                     ii.deinit();
@@ -147,7 +147,7 @@ pub fn next(self: *Self) void {
         break;
     }
 
-    cc.next();
+    try cc.next();
 
     if (cc.isEmpty()) {
         defer {
@@ -162,7 +162,7 @@ pub fn next(self: *Self) void {
         return;
     }
 
-    self.q.add(cc) catch unreachable;
+    try self.q.add(cc);
     self.current = self.q.removeOrNull();
 }
 
@@ -230,6 +230,6 @@ test "merge_iterator" {
 
     while (!mit.isEmpty()) {
         std.debug.print("key: {s}, value: {s}\n", .{ mit.key(), mit.value() });
-        mit.next();
+        try mit.next();
     }
 }

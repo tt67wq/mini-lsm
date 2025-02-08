@@ -608,22 +608,16 @@ pub const SsTableIterator = struct {
         return self.blk_iterator.get().isEmpty();
     }
 
-    pub fn next(self: *Self) void {
-        self.blk_iterator.get().next();
+    pub fn next(self: *Self) !void {
+        try self.blk_iterator.get().next();
         if (self.blk_iterator.get().isEmpty()) {
             self.blk_idx += 1;
             if (self.blk_idx < self.table.get().numBlocks()) {
                 self.reset();
-                const blk = self.table.get().readBlockCached(self.blk_idx, self.allocator) catch {
-                    std.debug.panic("read block failed", .{});
-                };
-                const blk_iter = BlockIterator.createAndSeekToFirst(self.allocator, blk.clone()) catch {
-                    std.debug.panic("create block iterator failed", .{});
-                };
+                const blk = try self.table.get().readBlockCached(self.blk_idx, self.allocator);
+                const blk_iter = try BlockIterator.createAndSeekToFirst(self.allocator, blk.clone());
                 self.blk = blk;
-                self.blk_iterator = BlockIteratorPtr.create(self.allocator, blk_iter) catch {
-                    std.debug.panic("create block iterator ptr failed", .{});
-                };
+                self.blk_iterator = try BlockIteratorPtr.create(self.allocator, blk_iter);
             }
         }
     }

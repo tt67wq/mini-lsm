@@ -22,7 +22,7 @@ pub const CompactionTask = union(enum) {
 };
 
 pub const CompactionOptions = union(enum) {
-    no_compaction: void,
+    no_compaction: struct {},
 
     pub fn is_no_compaction(self: CompactionOptions) bool {
         return switch (self) {
