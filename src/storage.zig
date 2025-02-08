@@ -10,7 +10,7 @@ const MemTablePtr = MemTable.MemTablePtr;
 const MemTableIterator = MemTable.MemTableIterator;
 const StorageIterator = iterators.StorageIterator;
 const StorageIteratorPtr = iterators.StorageIteratorPtr;
-const MergeIteratorsPtr = iterators.MergeIteratorsPtr;
+const CombinedIteratorPtr = iterators.CombinedIteratorPtr;
 const SstConcatIterator = iterators.SstConcatIterator;
 const LsmIterator = iterators.LsmIterator;
 const TwoMergeIterator = iterators.TwoMergeIterator;
@@ -208,7 +208,7 @@ pub const StorageInner = struct {
         try DirSyncer.sync(dir);
     }
 
-    fn get_next_sst_id(self: *Self) usize {
+    fn getNextSstId(self: *Self) usize {
         return self.next_sst_id.fetchAdd(1, .seq_cst);
     }
 
@@ -330,7 +330,7 @@ pub const StorageInner = struct {
     }
 
     fn forceFreezeMemtable(self: *Self) !void {
-        const next_sst_id = self.get_next_sst_id();
+        const next_sst_id = self.getNextSstId();
         var new_mm: MemTable = undefined;
         {
             if (self.options.enable_wal) {
@@ -466,10 +466,10 @@ pub const StorageInner = struct {
         var m2 = try MergeIterators.init(self.allocator, sst_iters);
         errdefer m2.deinit();
 
-        var iter_a = try MergeIteratorsPtr.create(self.allocator, m1);
+        var iter_a = try CombinedIteratorPtr.create(self.allocator, .{ .merge_iterators = m1 });
         errdefer iter_a.release();
 
-        var iter_b = try MergeIteratorsPtr.create(self.allocator, m2);
+        var iter_b = try CombinedIteratorPtr.create(self.allocator, .{ .merge_iterators = m2 });
         errdefer iter_b.release();
 
         return LsmIterator.init(
@@ -577,7 +577,7 @@ pub const StorageInner = struct {
         }
     }
 
-    fn compactForceFull(self: *Self, f: ForceFullCompaction) !void {
+    fn compactForceFull(self: *Self, f: ForceFullCompaction) !std.ArrayList(SsTablePtr) {
         const l0_sstables = f.l0_sstables;
         const l1_sstables = f.l1_sstables;
 
@@ -605,13 +605,58 @@ pub const StorageInner = struct {
             try l1_tables.append(sst.clone());
         }
 
-        const l0_merge_iter = try MergeIterators.init(self.allocator, l0_iters);
-        const l1_sst_iter = try SstConcatIterator.initAndSeekToFirst(self.allocator, l1_tables);
+        var l0_merge_iter = try MergeIterators.init(self.allocator, l0_iters);
+        errdefer l0_merge_iter.deinit();
+        var l1_sst_iter = try SstConcatIterator.initAndSeekToFirst(self.allocator, l1_tables);
+        errdefer l1_sst_iter.deinit();
 
-        TwoMergeIterator.init(
-            StorageIteratorPtr.create(self.allocator, .{ .merge_iter = l0_merge_iter }),
-            StorageIteratorPtr.create(self.allocator, .{ .merge_iter = l1_sst_iter }),
+        var iter = try TwoMergeIterator.init(
+            try CombinedIteratorPtr.create(self.allocator, .{ .merge_iterators = l0_merge_iter }),
+            try CombinedIteratorPtr.create(self.allocator, .{ .sst_concat_iter = l1_sst_iter }),
         );
+        errdefer iter.deinit();
+
+        return try self.compactGenerateSstFromIter(iter, true);
+    }
+
+    fn compactGenerateSstFromIter(self: *Self, iter: TwoMergeIterator, compact_to_bottom_level: bool) !std.ArrayList(SsTablePtr) {
+        var builder: ?SsTableBuilder = null;
+        var new_ssts = std.ArrayList(SsTablePtr).init(self.allocator);
+        while (!iter.isEmpty()) {
+            if (builder) |_| {} else {
+                builder = try SsTableBuilder.init(self.allocator, self.options.block_size);
+            }
+            var b = builder.?;
+            if (compact_to_bottom_level) {
+                if (iter.value().len > 0) {
+                    try b.add(iter.key(), iter.value());
+                }
+            } else {
+                try b.add(iter.key(), iter.value());
+            }
+            try iter.next();
+
+            if (b.getApproximateSize() >= self.options.target_sst_size) {
+                const sst_id = self.getNextSstId();
+                var sst = try b.build(sst_id, self.block_cache.clone(), self.pathOfSst(sst_id));
+                errdefer sst.deinit();
+
+                var sst_ptr = try SsTablePtr.create(self.allocator, sst);
+                errdefer sst_ptr.deinit();
+
+                try new_ssts.append(sst_ptr);
+            }
+        }
+        // iter is empty
+        if (builder) |b| {
+            const sst_id = self.getNextSstId();
+            var sst = try b.build(sst_id, self.block_cache.clone(), self.pathOfSst(sst_id));
+            errdefer sst.deinit();
+            var sst_ptr = try SsTablePtr.create(self.allocator, sst);
+            errdefer sst_ptr.deinit();
+            try new_ssts.append(sst_ptr);
+        }
+        return new_ssts;
     }
 };
 
