@@ -87,6 +87,13 @@ pub const StorageState = struct {
             }
             self.sstables.deinit();
         }
+        // free levels
+        {
+            for (self.levels.items) |l| {
+                l.deinit();
+            }
+            self.levels.deinit();
+        }
     }
 
     pub fn getMemTable(self: StorageState) *MemTable {
