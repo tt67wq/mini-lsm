@@ -548,7 +548,9 @@ pub const StorageInner = struct {
         }
 
         var l0_sstables: std.ArrayList(usize) = undefined;
+        defer l0_sstables.deinit();
         var l1_sstables: std.ArrayList(usize) = undefined;
+        defer l1_sstables.deinit();
         {
             self.state_lock.lockShared();
             defer self.state_lock.unlockShared();
@@ -619,10 +621,14 @@ pub const StorageInner = struct {
         // remove old sst files
         {
             for (l0_sstables.items) |id| {
-                try std.fs.cwd().deleteFile(try self.pathOfSst(id));
+                const path = try self.pathOfSst(id);
+                defer self.allocator.free(path);
+                try std.fs.cwd().deleteFile(path);
             }
             for (l1_sstables.items) |id| {
-                try std.fs.cwd().deleteFile(try self.pathOfSst(id));
+                const path = try self.pathOfSst(id);
+                defer self.allocator.free(path);
+                try std.fs.cwd().deleteFile(path);
             }
         }
     }
@@ -640,7 +646,7 @@ pub const StorageInner = struct {
         const l1_sstables = f.l1_sstables;
 
         var l0_iters = try std.ArrayList(StorageIteratorPtr).initCapacity(self.allocator, l0_sstables.items.len);
-        errdefer l0_iters.deinit();
+        defer l0_iters.deinit();
 
         for (l0_sstables.items) |sst_id| {
             self.state_lock.lockShared();
@@ -702,7 +708,9 @@ pub const StorageInner = struct {
 
             if (builder.estimated_size() >= self.options.target_sst_size) {
                 const sst_id = self.getNextSstId();
-                var sst = try builder.build(sst_id, self.block_cache.clone(), try self.pathOfSst(sst_id));
+                const path = try self.pathOfSst(sst_id);
+                defer self.allocator.free(path);
+                var sst = try builder.build(sst_id, self.block_cache.clone(), path);
                 errdefer sst.deinit();
 
                 var sst_ptr = try SsTablePtr.create(self.allocator, sst);
@@ -714,7 +722,9 @@ pub const StorageInner = struct {
         // iter is empty
         if (initialized) {
             const sst_id = self.getNextSstId();
-            var sst = try builder.build(sst_id, self.block_cache.clone(), try self.pathOfSst(sst_id));
+            const path = try self.pathOfSst(sst_id);
+            defer self.allocator.free(path);
+            var sst = try builder.build(sst_id, self.block_cache.clone(), path);
             errdefer sst.deinit();
             var sst_ptr = try SsTablePtr.create(self.allocator, sst);
             errdefer sst_ptr.deinit();
@@ -867,7 +877,7 @@ test "compact" {
     var storage = try StorageInner.init(std.testing.allocator, "./tmp/storage/compact", opts);
     defer storage.deinit();
 
-    for (0..256) |i| {
+    for (0..1024) |i| {
         var kb: [10]u8 = undefined;
         var vb: [10]u8 = undefined;
         const kk = try std.fmt.bufPrint(&kb, "key{d:0>5}", .{i});
@@ -876,5 +886,7 @@ test "compact" {
     }
 
     try storage.triggerFlush();
+    std.debug.print("l0 size: {d}\n", .{storage.state.l0_sstables.items.len});
     try storage.forceFullCompaction();
+    std.debug.print("l0 size: {d}\n", .{storage.state.l0_sstables.items.len});
 }
