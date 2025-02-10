@@ -24,10 +24,11 @@ pub const CompactionTask = union(enum) {
 pub const CompactionOptions = union(enum) {
     no_compaction: struct {},
 
-    pub fn is_no_compaction(self: CompactionOptions) bool {
-        return switch (self) {
-            .no_compaction => true,
-            inline else => false,
-        };
+    pub fn is_no_compaction(_: CompactionOptions) bool {
+        // return switch (self) {
+        //     .no_compaction => true,
+        //     inline else => false,
+        // };
+        return true;
     }
 };
