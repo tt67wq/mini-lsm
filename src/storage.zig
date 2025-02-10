@@ -558,21 +558,79 @@ pub const StorageInner = struct {
             errdefer l1_sstables.deinit();
         }
 
-        var compation_task = CompactionTask{
+        const compation_task = CompactionTask{
             .force_full_compaction = .{
                 .l0_sstables = l0_sstables,
                 .l1_sstables = l1_sstables,
             },
         };
-        defer compation_task.deinit();
 
-        try self.compact(compation_task);
+        var sstables = try self.compact(compation_task);
+        defer {
+            for (sstables.items) |sst| {
+                var p = sst;
+                p.release();
+            }
+            sstables.deinit();
+        }
+        var ids = try std.ArrayList(usize).initCapacity(self.allocator, sstables.items.len);
+        defer ids.deinit();
+
+        {
+            self.state_lock.lock();
+            defer self.state_lock.unlock();
+
+            for (l0_sstables.items) |id| {
+                std.debug.assert(self.state.sstables.remove(id));
+            }
+            for (l1_sstables.items) |id| {
+                std.debug.assert(self.state.sstables.remove(id));
+            }
+            for (sstables.items) |sst| {
+                const id: usize = @intCast(sst.get().sstId());
+                try ids.append(id);
+                try self.state.sstables.put(id, sst);
+            }
+            var old_l1 = self.state.levels.pop();
+            old_l1.deinit();
+            try self.state.levels.append(try ids.clone());
+
+            // state.l0_sstables may change after compaction
+            {
+                var l0_sstables_map = std.AutoHashMap(usize, struct {}).init(self.allocator);
+                defer l0_sstables_map.deinit();
+
+                for (l0_sstables.items) |id| {
+                    try l0_sstables_map.put(id, .{});
+                }
+
+                var new_l0_sstables = std.ArrayList(usize).init(self.allocator);
+                errdefer new_l0_sstables.deinit();
+                for (self.state.l0_sstables.items) |id| {
+                    if (!l0_sstables_map.contains(id)) {
+                        try new_l0_sstables.append(id);
+                    }
+                }
+                self.state.l0_sstables.deinit();
+                self.state.l0_sstables = new_l0_sstables;
+            }
+            try self.syncDir();
+        }
+        // remove old sst files
+        {
+            for (l0_sstables.items) |id| {
+                try std.fs.cwd().deleteFile(try self.pathOfSst(id));
+            }
+            for (l1_sstables.items) |id| {
+                try std.fs.cwd().deleteFile(try self.pathOfSst(id));
+            }
+        }
     }
 
-    fn compact(self: *Self, task: CompactionTask) !void {
+    fn compact(self: *Self, task: CompactionTask) !std.ArrayList(SsTablePtr) {
         switch (task) {
             .force_full_compaction => |f| {
-                try self.compactForceFull(f);
+                return self.compactForceFull(f);
             },
         }
     }
@@ -614,31 +672,37 @@ pub const StorageInner = struct {
             try CombinedIteratorPtr.create(self.allocator, .{ .merge_iterators = l0_merge_iter }),
             try CombinedIteratorPtr.create(self.allocator, .{ .sst_concat_iter = l1_sst_iter }),
         );
-        errdefer iter.deinit();
+        defer iter.deinit();
 
-        return try self.compactGenerateSstFromIter(iter, true);
+        return self.compactGenerateSstFromIter(&iter, true);
     }
 
-    fn compactGenerateSstFromIter(self: *Self, iter: TwoMergeIterator, compact_to_bottom_level: bool) !std.ArrayList(SsTablePtr) {
-        var builder: ?SsTableBuilder = null;
+    fn compactGenerateSstFromIter(self: *Self, iter: *TwoMergeIterator, compact_to_bottom_level: bool) !std.ArrayList(SsTablePtr) {
+        var builder: SsTableBuilder = undefined;
+        var initialized = false;
+        defer {
+            if (initialized) {
+                builder.deinit();
+            }
+        }
         var new_ssts = std.ArrayList(SsTablePtr).init(self.allocator);
         while (!iter.isEmpty()) {
-            if (builder) |_| {} else {
+            if (!initialized) {
                 builder = try SsTableBuilder.init(self.allocator, self.options.block_size);
+                initialized = true;
             }
-            var b = builder.?;
             if (compact_to_bottom_level) {
                 if (iter.value().len > 0) {
-                    try b.add(iter.key(), iter.value());
+                    try builder.add(iter.key(), iter.value());
                 }
             } else {
-                try b.add(iter.key(), iter.value());
+                try builder.add(iter.key(), iter.value());
             }
             try iter.next();
 
-            if (b.getApproximateSize() >= self.options.target_sst_size) {
+            if (builder.estimated_size() >= self.options.target_sst_size) {
                 const sst_id = self.getNextSstId();
-                var sst = try b.build(sst_id, self.block_cache.clone(), self.pathOfSst(sst_id));
+                var sst = try builder.build(sst_id, self.block_cache.clone(), try self.pathOfSst(sst_id));
                 errdefer sst.deinit();
 
                 var sst_ptr = try SsTablePtr.create(self.allocator, sst);
@@ -648,9 +712,9 @@ pub const StorageInner = struct {
             }
         }
         // iter is empty
-        if (builder) |b| {
+        if (initialized) {
             const sst_id = self.getNextSstId();
-            var sst = try b.build(sst_id, self.block_cache.clone(), self.pathOfSst(sst_id));
+            var sst = try builder.build(sst_id, self.block_cache.clone(), try self.pathOfSst(sst_id));
             errdefer sst.deinit();
             var sst_ptr = try SsTablePtr.create(self.allocator, sst);
             errdefer sst_ptr.deinit();
@@ -789,4 +853,28 @@ test "scan" {
         std.debug.print("key: {s} value: {s}\n", .{ iter.key(), iter.value() });
         try iter.next();
     }
+}
+
+test "compact" {
+    defer std.fs.cwd().deleteTree("./tmp/storage/compact") catch unreachable;
+    const opts = StorageOptions{
+        .block_size = 1024,
+        .target_sst_size = 1024,
+        .num_memtable_limit = 10,
+        .enable_wal = true,
+        .compaction_options = .{ .no_compaction = .{} },
+    };
+    var storage = try StorageInner.init(std.testing.allocator, "./tmp/storage/compact", opts);
+    defer storage.deinit();
+
+    for (0..256) |i| {
+        var kb: [10]u8 = undefined;
+        var vb: [10]u8 = undefined;
+        const kk = try std.fmt.bufPrint(&kb, "key{d:0>5}", .{i});
+        const vv = try std.fmt.bufPrint(&vb, "val{d:0>5}", .{i});
+        try storage.put(kk, vv);
+    }
+
+    try storage.triggerFlush();
+    try storage.forceFullCompaction();
 }

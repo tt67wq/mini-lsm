@@ -127,7 +127,7 @@ pub const TwoMergeIterator = struct {
         return iter;
     }
 
-    fn deinit(self: *TwoMergeIterator) void {
+    pub fn deinit(self: *TwoMergeIterator) void {
         self.a.release();
         self.b.release();
     }

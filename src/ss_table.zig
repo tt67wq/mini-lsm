@@ -115,6 +115,10 @@ pub const SsTableBuilder = struct {
         try self.data.writer().writeInt(u32, cksm, .big);
     }
 
+    pub fn estimated_size(self: Self) usize {
+        return self.data.items.len;
+    }
+
     // the tail part of sstable:
     // |......| block_meta_encoded | meta_offset: 4 | bloom_filter_encoded | bloom_offset: 4 |
     pub fn build(
