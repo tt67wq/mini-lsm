@@ -357,7 +357,7 @@ test "block iterator" {
 
     while (!b_it.isEmpty()) {
         std.debug.print("key: {s}, value: {s}\n", .{ b_it.key(), b_it.value() });
-        b_it.next();
+        try b_it.next();
     }
 
     try b_it.seekToKey("foo3");
@@ -372,6 +372,6 @@ test "block iterator" {
 
     while (!b_it2.isEmpty()) {
         std.debug.print("key: {s}, value: {s}\n", .{ b_it2.key(), b_it2.value() });
-        b_it2.next();
+        try b_it2.next();
     }
 }

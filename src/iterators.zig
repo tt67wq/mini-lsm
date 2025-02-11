@@ -35,10 +35,10 @@ pub const StorageIterator = union(enum) {
     pub fn next(self: *StorageIterator) anyerror!void {
         switch (self.*) {
             .mem_iter => self.mem_iter.next(),
-            inline else => |impl| {
-                var tmp = impl;
-                try tmp.next();
-            },
+            .ss_table_iter => try self.ss_table_iter.next(),
+            .sst_concat_iter => try self.sst_concat_iter.next(),
+            .merge_iterators => try self.merge_iterators.next(),
+            .two_merge_iter => try self.two_merge_iter.next(),
         }
     }
 
