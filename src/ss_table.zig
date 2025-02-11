@@ -811,7 +811,7 @@ test "iterator" {
     std.debug.print("------------------ iter begin -----------------\n", .{});
     while (!iter.isEmpty()) {
         std.debug.print("key: {s}, value: {s}\n", .{ iter.key(), iter.value() });
-        iter.next();
+        try iter.next();
     }
     std.debug.print("------------------ iter end -----------------\n", .{});
 
@@ -821,7 +821,7 @@ test "iterator" {
     std.debug.print("------------------ iter begin -----------------\n", .{});
     while (!iter2.isEmpty()) {
         std.debug.print("key: {s}, value: {s}\n", .{ iter2.key(), iter2.value() });
-        iter2.next();
+        try iter2.next();
     }
     std.debug.print("------------------ iter end -----------------\n", .{});
 }
