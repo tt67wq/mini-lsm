@@ -625,6 +625,10 @@ pub const SsTableIterator = struct {
             }
         }
     }
+
+    pub fn numActiveIterators(_: Self) usize {
+        return 1;
+    }
 };
 
 test "table_meta" {
