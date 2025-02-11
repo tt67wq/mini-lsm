@@ -465,48 +465,47 @@ pub const StorageInner = struct {
         errdefer l0_merge_iter.deinit();
 
         // levels
-        // var lv_iters = std.ArrayList(StorageIteratorPtr).init(self.allocator);
-        // defer lv_iters.deinit();
-        // {
-        //     self.state_lock.lockShared();
-        //     defer self.state_lock.unlockShared();
-        //     for (self.state.levels.items) |l| {
-        //         var lv_ssts = try std.ArrayList(SsTablePtr).initCapacity(self.allocator, l.items.len);
-        //         defer lv_ssts.deinit();
-        //         for (l.items) |sst_id| {
-        //             const table_ptr = self.state.sstables.get(sst_id).?;
-        //             const table = table_ptr.load();
-        //             if (rangeOverlap(lower, upper, table.firstKey(), table.lastKey())) {
-        //                 try lv_ssts.append(table_ptr.clone());
-        //             }
-        //         }
+        var lv_iters = std.ArrayList(StorageIteratorPtr).init(self.allocator);
+        defer lv_iters.deinit();
+        {
+            self.state_lock.lockShared();
+            defer self.state_lock.unlockShared();
+            for (self.state.levels.items) |l| {
+                var lv_ssts = try std.ArrayList(SsTablePtr).initCapacity(self.allocator, l.items.len);
+                for (l.items) |sst_id| {
+                    const table_ptr = self.state.sstables.get(sst_id).?;
+                    const table = table_ptr.load();
+                    if (rangeOverlap(lower, upper, table.firstKey(), table.lastKey())) {
+                        try lv_ssts.append(table_ptr.clone());
+                    }
+                }
 
-        //         var sst_concat_iter: SstConcatIterator = undefined;
-        //         switch (lower.bound_t) {
-        //             .included => {
-        //                 sst_concat_iter = try SstConcatIterator.initAndSeekToKey(self.allocator, lv_ssts, lower.data);
-        //             },
-        //             .excluded => {
-        //                 sst_concat_iter = try SstConcatIterator.initAndSeekToKey(self.allocator, lv_ssts, lower.data);
-        //                 if (!sst_concat_iter.isEmpty() and std.mem.eql(u8, sst_concat_iter.key(), lower.data)) {
-        //                     try sst_concat_iter.next();
-        //                 }
-        //             },
-        //             .unbounded => {
-        //                 sst_concat_iter = try SstConcatIterator.initAndSeekToFirst(self.allocator, lv_ssts);
-        //             },
-        //         }
-        //         errdefer sst_concat_iter.deinit();
-        //         var sp = try StorageIteratorPtr.create(self.allocator, .{
-        //             .sst_concat_iter = sst_concat_iter,
-        //         });
-        //         errdefer sp.release();
-        //         try lv_iters.append(sp);
-        //     }
-        // }
+                var sst_concat_iter: SstConcatIterator = undefined;
+                switch (lower.bound_t) {
+                    .included => {
+                        sst_concat_iter = try SstConcatIterator.initAndSeekToKey(self.allocator, lv_ssts, lower.data);
+                    },
+                    .excluded => {
+                        sst_concat_iter = try SstConcatIterator.initAndSeekToKey(self.allocator, lv_ssts, lower.data);
+                        if (!sst_concat_iter.isEmpty() and std.mem.eql(u8, sst_concat_iter.key(), lower.data)) {
+                            try sst_concat_iter.next();
+                        }
+                    },
+                    .unbounded => {
+                        sst_concat_iter = try SstConcatIterator.initAndSeekToFirst(self.allocator, lv_ssts);
+                    },
+                }
+                errdefer sst_concat_iter.deinit();
+                var sp = try StorageIteratorPtr.create(self.allocator, .{
+                    .sst_concat_iter = sst_concat_iter,
+                });
+                errdefer sp.release();
+                try lv_iters.append(sp);
+            }
+        }
 
-        // var lv_merge_iters = try MergeIterators.init(self.allocator, lv_iters);
-        // errdefer lv_merge_iters.deinit();
+        var lv_merge_iters = try MergeIterators.init(self.allocator, lv_iters);
+        errdefer lv_merge_iters.deinit();
 
         var iter = try TwoMergeIterator.init(
             try StorageIteratorPtr.create(self.allocator, .{ .merge_iterators = memtable_merge_iters }),
@@ -514,10 +513,10 @@ pub const StorageInner = struct {
         );
         errdefer iter.deinit();
 
-        // iter = try TwoMergeIterator.init(
-        //     try StorageIteratorPtr.create(self.allocator, .{ .two_merge_iter = iter }),
-        //     try StorageIteratorPtr.create(self.allocator, .{ .merge_iterators = lv_merge_iters }),
-        // );
+        iter = try TwoMergeIterator.init(
+            try StorageIteratorPtr.create(self.allocator, .{ .two_merge_iter = iter }),
+            try StorageIteratorPtr.create(self.allocator, .{ .merge_iterators = lv_merge_iters }),
+        );
 
         return LsmIterator.init(iter, upper);
     }
@@ -635,7 +634,7 @@ pub const StorageInner = struct {
             for (sstables.items) |sst| {
                 const id: usize = @intCast(sst.get().sstId());
                 try ids.append(id);
-                try self.state.sstables.put(id, sst);
+                try self.state.sstables.put(id, sst.clone());
             }
             var old_l1 = self.state.levels.pop();
             old_l1.deinit();
@@ -933,4 +932,15 @@ test "compact" {
     std.debug.print("l0 size: {d}\n", .{storage.state.l0_sstables.items.len});
     try storage.forceFullCompaction();
     std.debug.print("l0 size: {d}\n", .{storage.state.l0_sstables.items.len});
+
+    var iter = try storage.scan(
+        Bound.init("", .unbounded),
+        Bound.init("", .unbounded),
+    );
+    defer iter.deinit();
+
+    while (!iter.isEmpty()) {
+        std.debug.print("key: {s} value: {s}\n", .{ iter.key(), iter.value() });
+        try iter.next();
+    }
 }
