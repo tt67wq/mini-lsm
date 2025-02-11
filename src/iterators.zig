@@ -12,10 +12,12 @@ pub const StorageIteratorPtr = smart_pointer.SmartPointer(StorageIterator);
 pub const StorageIterator = union(enum) {
     mem_iter: MemTableIterator,
     ss_table_iter: SsTableIterator,
+    sst_concat_iter: SstConcatIterator,
 
     pub fn deinit(self: *StorageIterator) void {
         switch (self.*) {
             .ss_table_iter => self.ss_table_iter.deinit(),
+            .sst_concat_iter => self.sst_concat_iter.deinit(),
             inline else => {},
         }
     }
@@ -30,6 +32,7 @@ pub const StorageIterator = union(enum) {
         switch (self.*) {
             .mem_iter => self.mem_iter.next(),
             .ss_table_iter => try self.ss_table_iter.next(),
+            .sst_concat_iter => try self.sst_concat_iter.next(),
         }
     }
 
@@ -55,13 +58,13 @@ pub const CombinedIteratorPtr = smart_pointer.SmartPointer(CombinedIterator);
 pub const CombinedIterator = union(enum) {
     storage_iter: StorageIterator,
     merge_iterators: MergeIterators,
-    sst_concat_iter: SstConcatIterator,
+    two_merge_iter: TwoMergeIterator,
 
     pub fn deinit(self: *CombinedIterator) void {
         switch (self.*) {
             .merge_iterators => self.merge_iterators.deinit(),
             .storage_iter => self.storage_iter.deinit(),
-            .sst_concat_iter => self.sst_concat_iter.deinit(),
+            .two_merge_iter => self.two_merge_iter.deinit(),
         }
     }
 
@@ -72,9 +75,10 @@ pub const CombinedIterator = union(enum) {
     }
     pub fn next(self: *CombinedIterator) !void {
         switch (self.*) {
-            .merge_iterators => try self.merge_iterators.next(),
-            .storage_iter => try self.storage_iter.next(),
-            .sst_concat_iter => try self.sst_concat_iter.next(),
+            inline else => |impl| {
+                var tmp = impl;
+                try tmp.next();
+            },
         }
     }
     pub fn key(self: CombinedIterator) []const u8 {
