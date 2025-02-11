@@ -423,14 +423,13 @@ pub const StorageInner = struct {
             try memtable_iters.append(sp);
         }
 
-        var m1 = try MergeIterators.init(self.allocator, memtable_iters);
-        errdefer m1.deinit();
+        var memtable_merge_iters = try MergeIterators.init(self.allocator, memtable_iters);
+        errdefer memtable_merge_iters.deinit();
 
         // l0_sst
-        var sst_iters = std.ArrayList(StorageIteratorPtr).init(self.allocator);
-        defer sst_iters.deinit();
+        var l0_iters = std.ArrayList(StorageIteratorPtr).init(self.allocator);
+        defer l0_iters.deinit();
 
-        // collect sst iterators
         {
             self.state_lock.lockShared();
             defer self.state_lock.unlockShared();
@@ -458,24 +457,70 @@ pub const StorageInner = struct {
                         .ss_table_iter = ss_iter,
                     });
                     errdefer sp.release();
-                    try sst_iters.append(sp);
+                    try l0_iters.append(sp);
                 }
             }
         }
 
-        var m2 = try MergeIterators.init(self.allocator, sst_iters);
-        errdefer m2.deinit();
+        var l0_merge_iter = try MergeIterators.init(self.allocator, l0_iters);
+        errdefer l0_merge_iter.deinit();
 
-        var iter_a = try CombinedIteratorPtr.create(self.allocator, .{ .merge_iterators = m1 });
-        errdefer iter_a.release();
+        // levels
+        var lv_iters = std.ArrayList(StorageIteratorPtr).init(self.allocator);
+        defer lv_iters.deinit();
+        {
+            self.state_lock.lockShared();
+            defer self.state_lock.unlockShared();
+            for (self.state.levels.items) |l| {
+                var lv_ssts = try std.ArrayList(SsTablePtr).initCapacity(self.allocator, l.items.len);
+                defer lv_ssts.deinit();
+                for (l.items) |sst_id| {
+                    const table_ptr = self.state.sstables.get(sst_id).?;
+                    const table = table_ptr.load();
+                    if (rangeOverlap(lower, upper, table.firstKey(), table.lastKey())) {
+                        try lv_ssts.append(table_ptr.clone());
+                    }
+                }
 
-        var iter_b = try CombinedIteratorPtr.create(self.allocator, .{ .merge_iterators = m2 });
-        errdefer iter_b.release();
+                var sst_concat_iter: SstConcatIterator = undefined;
+                switch (lower.bound_t) {
+                    .included => {
+                        sst_concat_iter = try SstConcatIterator.initAndSeekToKey(self.allocator, lv_ssts, lower.data);
+                    },
+                    .excluded => {
+                        sst_concat_iter = try SstConcatIterator.initAndSeekToKey(self.allocator, lv_ssts, lower.data);
+                        if (!sst_concat_iter.isEmpty() and std.mem.eql(u8, sst_concat_iter.key(), lower.data)) {
+                            try sst_concat_iter.next();
+                        }
+                    },
+                    .unbounded => {
+                        sst_concat_iter = try SstConcatIterator.initAndSeekToFirst(self.allocator, lv_ssts);
+                    },
+                }
+                errdefer sst_concat_iter.deinit();
+                var sp = try StorageIteratorPtr.create(self.allocator, .{
+                    .sst_concat_iter = sst_concat_iter,
+                });
+                errdefer sp.release();
+                try lv_iters.append(sp);
+            }
+        }
 
-        return LsmIterator.init(
-            try TwoMergeIterator.init(iter_a, iter_b),
-            upper,
+        var lv_merge_iters = try MergeIterators.init(self.allocator, lv_iters);
+        errdefer lv_merge_iters.deinit();
+
+        var iter = try TwoMergeIterator.init(
+            try CombinedIteratorPtr.create(self.allocator, .{ .merge_iterators = memtable_merge_iters }),
+            try CombinedIteratorPtr.create(self.allocator, .{ .merge_iterators = l0_merge_iter }),
         );
+        errdefer iter.deinit();
+
+        iter = try TwoMergeIterator.init(
+            try CombinedIteratorPtr.create(self.allocator, .{ .two_merge_iter = iter }),
+            try CombinedIteratorPtr.create(self.allocator, .{ .merge_iterators = lv_merge_iters }),
+        );
+
+        return LsmIterator.init(iter, upper);
     }
 
     fn pathOfSst(self: Self, sst_id: usize) ![]u8 {
