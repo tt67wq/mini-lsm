@@ -13,11 +13,15 @@ pub const StorageIterator = union(enum) {
     mem_iter: MemTableIterator,
     ss_table_iter: SsTableIterator,
     sst_concat_iter: SstConcatIterator,
+    merge_iterators: MergeIterators,
+    two_merge_iter: TwoMergeIterator,
 
     pub fn deinit(self: *StorageIterator) void {
         switch (self.*) {
             .ss_table_iter => self.ss_table_iter.deinit(),
             .sst_concat_iter => self.sst_concat_iter.deinit(),
+            .merge_iterators => self.merge_iterators.deinit(),
+            .two_merge_iter => self.two_merge_iter.deinit(),
             inline else => {},
         }
     }
@@ -28,11 +32,13 @@ pub const StorageIterator = union(enum) {
         }
     }
 
-    pub fn next(self: *StorageIterator) !void {
+    pub fn next(self: *StorageIterator) anyerror!void {
         switch (self.*) {
             .mem_iter => self.mem_iter.next(),
-            .ss_table_iter => try self.ss_table_iter.next(),
-            .sst_concat_iter => try self.sst_concat_iter.next(),
+            inline else => |impl| {
+                var tmp = impl;
+                try tmp.next();
+            },
         }
     }
 
@@ -48,63 +54,66 @@ pub const StorageIterator = union(enum) {
         }
     }
 
-    pub fn numActiveIterators(_: StorageIterator) usize {
-        return 1;
-    }
-};
-
-pub const CombinedIteratorPtr = smart_pointer.SmartPointer(CombinedIterator);
-
-pub const CombinedIterator = union(enum) {
-    storage_iter: StorageIterator,
-    merge_iterators: MergeIterators,
-    two_merge_iter: TwoMergeIterator,
-
-    pub fn deinit(self: *CombinedIterator) void {
-        switch (self.*) {
-            .merge_iterators => self.merge_iterators.deinit(),
-            .storage_iter => self.storage_iter.deinit(),
-            .two_merge_iter => self.two_merge_iter.deinit(),
-        }
-    }
-
-    pub fn isEmpty(self: CombinedIterator) bool {
-        switch (self) {
-            inline else => |impl| return impl.isEmpty(),
-        }
-    }
-    pub fn next(self: *CombinedIterator) !void {
-        switch (self.*) {
-            inline else => |impl| {
-                var tmp = impl;
-                try tmp.next();
-            },
-        }
-    }
-    pub fn key(self: CombinedIterator) []const u8 {
-        switch (self) {
-            inline else => |impl| return impl.key(),
-        }
-    }
-    pub fn value(self: CombinedIterator) []const u8 {
-        switch (self) {
-            inline else => |impl| return impl.value(),
-        }
-    }
-
-    pub fn numActiveIterators(self: CombinedIterator) usize {
+    pub fn numActiveIterators(self: StorageIterator) usize {
         switch (self) {
             inline else => |impl| return impl.numActiveIterators(),
         }
     }
 };
 
+// pub const CombinedIteratorPtr = smart_pointer.SmartPointer(CombinedIterator);
+
+// pub const CombinedIterator = union(enum) {
+//     storage_iter: StorageIterator,
+//     merge_iterators: MergeIterators,
+//     two_merge_iter: TwoMergeIterator,
+
+//     pub fn deinit(self: *CombinedIterator) void {
+//         switch (self.*) {
+//             inline else => |impl| {
+//                 var tmp = impl;
+//                 try tmp.deinit();
+//             },
+//         }
+//     }
+
+//     pub fn isEmpty(self: CombinedIterator) bool {
+//         switch (self) {
+//             inline else => |impl| return impl.isEmpty(),
+//         }
+//     }
+//     pub fn next(self: *CombinedIterator) anyerror!void {
+//         switch (self.*) {
+//             inline else => |impl| {
+//                 var tmp = impl;
+//                 try tmp.next();
+//             },
+//         }
+//     }
+//     pub fn key(self: CombinedIterator) []const u8 {
+//         switch (self) {
+//             inline else => |impl| return impl.key(),
+//         }
+//     }
+//     pub fn value(self: CombinedIterator) []const u8 {
+//         switch (self) {
+//             inline else => |impl| return impl.value(),
+//         }
+//     }
+
+//     pub fn numActiveIterators(self: CombinedIterator) usize {
+//         switch (self) {
+//             inline else => |impl| return impl.numActiveIterators(),
+//         }
+//     }
+// };
+
 pub const TwoMergeIterator = struct {
-    a: CombinedIteratorPtr,
-    b: CombinedIteratorPtr,
+    a: StorageIteratorPtr,
+    b: StorageIteratorPtr,
     choose_a: bool,
 
-    fn chooseA(a: *CombinedIterator, b: *CombinedIterator) bool {
+    fn chooseA(a: *StorageIterator, b: *StorageIterator) bool {
         if (a.isEmpty()) {
             return false;
         }
@@ -120,7 +129,7 @@ pub const TwoMergeIterator = struct {
         if (!ap.isEmpty() and !bp.isEmpty() and std.mem.eql(u8, ap.key(), bp.key())) try bp.next();
     }
 
-    pub fn init(a: CombinedIteratorPtr, b: CombinedIteratorPtr) !TwoMergeIterator {
+    pub fn init(a: StorageIteratorPtr, b: StorageIteratorPtr) !TwoMergeIterator {
         var iter = TwoMergeIterator{
             .a = a,
             .b = b,

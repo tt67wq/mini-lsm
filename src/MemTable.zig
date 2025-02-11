@@ -36,6 +36,10 @@ pub const MemTableIterator = struct {
     pub fn value(self: MemTableIterator) []const u8 {
         return self.iter.value();
     }
+
+    pub fn numActiveIterators(_: MemTableIterator) usize {
+        return 1;
+    }
 };
 
 const max_key = "Ω";
