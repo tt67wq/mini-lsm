@@ -5,6 +5,12 @@ pub const CompactionTask = union(enum) {
     force_full_compaction: ForceFullCompaction,
     simple: SimpleLeveledCompactionTask,
 
+    pub fn deinit(self: *CompactionTask) void {
+        switch (self.*) {
+            .force_full_compaction => self.force_full_compaction.deinit(),
+            .simple => self.simple.deinit(),
+        }
+    }
     pub fn compactToBottomLevel(self: CompactionTask) bool {
         return switch (self) {
             .force_full_compaction => true,
@@ -28,6 +34,38 @@ pub const CompactionOptions = union(enum) {
 pub const CompactionController = struct {
     no_compaction: struct {},
     simple: SimpleLeveledCompactionController,
+
+    pub fn generateCompactionTask(self: CompactionController, state: *storage.StorageState) CompactionTask {
+        switch (self) {
+            .simple => |controller| {
+                const task = controller.generateCompactionTask(state);
+                return .{
+                    .simple = task,
+                };
+            },
+            inline else => unreachable,
+        }
+    }
+
+    pub fn applyCompactionResult(
+        self: CompactionController,
+        state: *storage.StorageState,
+        task: CompactionTask,
+        output: []usize,
+    ) !std.ArrayList(usize) {
+        switch (self) {
+            .simple => |controller| {
+                return try controller.applyCompactionResult(state, task.simple, output);
+            },
+            inline else => unreachable,
+        }
+    }
+
+    pub fn flushToL0(self: CompactionController) bool {
+        switch (self) {
+            inline else => true,
+        }
+    }
 };
 
 // ------------------ force full compaction ------------------
@@ -61,7 +99,7 @@ const SimpleLeveledCompactionTask = struct {
     }
 };
 
-const SimpleLeveledCompactionController = struct {
+pub const SimpleLeveledCompactionController = struct {
     options: SimpleLeveledCompactionOptions,
 
     pub fn init(options: SimpleLeveledCompactionOptions) SimpleLeveledCompactionController {
@@ -70,7 +108,7 @@ const SimpleLeveledCompactionController = struct {
         };
     }
 
-    pub fn generateCompationTask(self: SimpleLeveledCompactionController, state: *storage.StorageState) !?SimpleLeveledCompactionTask {
+    pub fn generateCompactionTask(self: SimpleLeveledCompactionController, state: *storage.StorageState) !?SimpleLeveledCompactionTask {
         if (self.options.max_levels == 1) {
             return null;
         }

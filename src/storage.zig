@@ -21,6 +21,8 @@ const BlockCache = ss_table.BlockCache;
 const BlockCachePtr = ss_table.BlockCachePtr;
 const CompactionTask = compact.CompactionTask;
 const ForceFullCompaction = compact.ForceFullCompaction;
+const CompactionController = compact.CompactionController;
+const SimpleLeveledCompactionController = compact.SimpleLeveledCompactionController;
 
 pub const StorageOptions = struct {
     block_size: usize,
@@ -48,6 +50,7 @@ pub const StorageState = struct {
                 const lv1 = std.ArrayList(usize).init(allocator);
                 try levels.append(lv1);
             },
+            inline else => {},
         }
         return StorageState{
             .allocator = allocator,
@@ -117,6 +120,7 @@ pub const StorageInner = struct {
     next_sst_id: atomic.Value(usize),
     path: []const u8,
     options: StorageOptions,
+    compaction_controller: CompactionController,
     block_cache: BlockCachePtr,
     terminate: std.Thread.ResetEvent = .{},
     wg: std.Thread.WaitGroup = .{},
@@ -127,6 +131,14 @@ pub const StorageInner = struct {
         // cache
         var cache = try BlockCache.init(allocator, 1 << 20); // 4G
         errdefer cache.deinit();
+
+        // compaction controller
+        const compaction_controller = switch (options.compaction_options) {
+            .simple => |option| {
+                CompactionController{ .simple = try SimpleLeveledCompactionController.init(option) };
+            },
+            .no_compaction => CompactionController{ .no_compaction = {} },
+        };
 
         // manifest
         const manifest_path = try std.fs.path.join(allocator, &[_][]const u8{
@@ -160,6 +172,7 @@ pub const StorageInner = struct {
             .state = state,
             .next_sst_id = atomic.Value(usize).init(next_sst_id + 1),
             .options = options,
+            .compaction_controller = compaction_controller,
             .block_cache = try BlockCachePtr.create(allocator, cache),
         };
     }
@@ -581,7 +594,9 @@ pub const StorageInner = struct {
         }
     }
 
-    pub fn spawnCompactionThread(self: *Self) void {
+    // fn triggerCompaction(self: *Self) !void {}
+
+    pub fn spawnFlushThread(self: *Self) void {
         self.wg.spawnManager(self.flushLoop, .{});
     }
 
@@ -681,6 +696,7 @@ pub const StorageInner = struct {
             .force_full_compaction => |f| {
                 return self.compactForceFull(f);
             },
+            inline else => unreachable,
         }
     }
 
