@@ -652,7 +652,7 @@ pub const StorageInner = struct {
                 var new_l0_sstables = std.ArrayList(usize).init(self.allocator);
                 errdefer new_l0_sstables.deinit();
                 for (self.state.l0_sstables.items) |id| {
-                    if (!l0_sstables_map.contains(id)) {
+                    if (!l0_sstables_map.remove(id)) {
                         try new_l0_sstables.append(id);
                     }
                 }
