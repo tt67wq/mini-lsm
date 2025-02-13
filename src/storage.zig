@@ -48,10 +48,15 @@ pub const StorageState = struct {
         var levels = std.ArrayList(std.ArrayList(usize)).init(allocator);
         switch (options.compaction_options) {
             .no_compaction => {
-                const lv1 = std.ArrayList(usize).init(allocator);
-                try levels.append(lv1);
+                const lv = std.ArrayList(usize).init(allocator);
+                try levels.append(lv);
             },
-            inline else => {},
+            .simple => |option| {
+                for (0..option.max_levels) |_| {
+                    const lv = std.ArrayList(usize).init(allocator);
+                    try levels.append(lv);
+                }
+            },
         }
         return StorageState{
             .allocator = allocator,
@@ -412,7 +417,13 @@ pub const StorageInner = struct {
     pub fn scan(self: *Self, lower: Bound, upper: Bound) !LsmIterator {
         // memtable iters are sorted, newest memtable at the end
         var memtable_iters = std.ArrayList(StorageIteratorPtr).init(self.allocator);
-        defer memtable_iters.deinit();
+        defer {
+            for (memtable_iters.items) |iter| {
+                var ii = iter;
+                ii.release();
+            }
+            memtable_iters.deinit();
+        }
 
         // collect memtable iterators
         {
@@ -439,7 +450,13 @@ pub const StorageInner = struct {
 
         // l0_sst
         var l0_iters = std.ArrayList(StorageIteratorPtr).init(self.allocator);
-        defer l0_iters.deinit();
+        defer {
+            for (l0_iters.items) |iter| {
+                var ii = iter;
+                ii.release();
+            }
+            l0_iters.deinit();
+        }
 
         {
             self.state_lock.lockShared();
@@ -478,7 +495,14 @@ pub const StorageInner = struct {
 
         // levels
         var lv_iters = std.ArrayList(StorageIteratorPtr).init(self.allocator);
-        defer lv_iters.deinit();
+        defer {
+            for (lv_iters.items) |iter| {
+                var ii = iter;
+                ii.release();
+            }
+            lv_iters.deinit();
+        }
+
         {
             self.state_lock.lockShared();
             defer self.state_lock.unlockShared();
@@ -598,7 +622,7 @@ pub const StorageInner = struct {
         {
             self.state_lock.lockShared();
             defer self.state_lock.unlockShared();
-            if (try self.compaction_controller.generateCompactionTask(self.state)) |ct| {
+            if (try self.compaction_controller.generateCompactionTask(&self.state)) |ct| {
                 task = ct;
             } else {
                 return;
@@ -659,7 +683,7 @@ pub const StorageInner = struct {
         for (ssts_to_remove.items) |sst| {
             const path = try self.pathOfSst(sst.get().sstId());
             defer self.allocator.free(path);
-            try std.fs.cwd().deleteFile(path, .{});
+            try std.fs.cwd().deleteFile(path);
         }
         try self.syncDir();
     }
@@ -791,7 +815,13 @@ pub const StorageInner = struct {
         const l1_sstables = f.l1_sstables;
 
         var l0_iters = try std.ArrayList(StorageIteratorPtr).initCapacity(self.allocator, l0_sstables.items.len);
-        defer l0_iters.deinit();
+        defer {
+            for (l0_iters.items) |iter| {
+                var ii = iter;
+                ii.release();
+            }
+            l0_iters.deinit();
+        }
 
         for (l0_sstables.items) |sst_id| {
             self.state_lock.lockShared();
@@ -829,6 +859,7 @@ pub const StorageInner = struct {
     }
 
     fn compactSimple(self: *Self, task: SimpleLeveledCompactionTask) !std.ArrayList(SsTablePtr) {
+        std.debug.print("compactSimple\n", .{});
         if (task.upper_level) |_| {
             var upper_ssts = try std.ArrayList(SsTablePtr).initCapacity(
                 self.allocator,
@@ -869,7 +900,13 @@ pub const StorageInner = struct {
                 self.allocator,
                 task.upper_level_sst_ids.items.len,
             );
-            defer upper_iters.deinit();
+            defer {
+                for (upper_iters.items) |iter| {
+                    var ii = iter;
+                    ii.release();
+                }
+                upper_iters.deinit();
+            }
 
             self.state_lock.lockShared();
             for (task.upper_level_sst_ids.items) |sst_id| {
@@ -1088,16 +1125,16 @@ test "scan" {
     }
 }
 
-test "compact" {
-    defer std.fs.cwd().deleteTree("./tmp/storage/compact") catch unreachable;
+test "full_compact" {
+    defer std.fs.cwd().deleteTree("./tmp/storage/full_compact") catch unreachable;
     const opts = StorageOptions{
-        .block_size = 1024,
-        .target_sst_size = 1024,
+        .block_size = 256,
+        .target_sst_size = 256,
         .num_memtable_limit = 10,
         .enable_wal = true,
         .compaction_options = .{ .no_compaction = .{} },
     };
-    var storage = try StorageInner.init(std.testing.allocator, "./tmp/storage/compact", opts);
+    var storage = try StorageInner.init(std.testing.allocator, "./tmp/storage/full_compact", opts);
     defer storage.deinit();
 
     for (0..1024) |i| {
@@ -1122,5 +1159,36 @@ test "compact" {
     while (!iter.isEmpty()) {
         std.debug.print("key: {s} value: {s}\n", .{ iter.key(), iter.value() });
         try iter.next();
+    }
+}
+
+test "simple_compact" {
+    defer std.fs.cwd().deleteTree("./tmp/storage/simple_compact") catch unreachable;
+    const opts = StorageOptions{
+        .block_size = 256,
+        .target_sst_size = 1024,
+        .num_memtable_limit = 10,
+        .enable_wal = true,
+        .compaction_options = .{
+            .simple = .{
+                .size_ration_percent = 50,
+                .level0_file_num_compaction_trigger = 2,
+                .max_levels = 3,
+            },
+        },
+    };
+
+    var storage = try StorageInner.init(std.testing.allocator, "./tmp/storage/full_compact", opts);
+    defer storage.deinit();
+
+    for (0..1024) |i| {
+        var kb: [10]u8 = undefined;
+        var vb: [10]u8 = undefined;
+        const kk = try std.fmt.bufPrint(&kb, "key{d:0>5}", .{i});
+        const vv = try std.fmt.bufPrint(&vb, "val{d:0>5}", .{i});
+        try storage.put(kk, vv);
+
+        try storage.triggerFlush();
+        try storage.triggerCompaction();
     }
 }

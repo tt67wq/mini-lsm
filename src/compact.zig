@@ -38,10 +38,12 @@ pub const CompactionController = union(enum) {
     pub fn generateCompactionTask(self: CompactionController, state: *storage.StorageState) !?CompactionTask {
         switch (self) {
             .simple => |controller| {
-                const task = try controller.generateCompactionTask(state);
-                return .{
-                    .simple = task,
-                };
+                if (try controller.generateCompactionTask(state)) |task| {
+                    return .{
+                        .simple = task,
+                    };
+                }
+                return null;
             },
             inline else => unreachable,
         }
@@ -173,7 +175,7 @@ pub const SimpleLeveledCompactionController = struct {
             errdefer new_l0_sstables.deinit();
 
             {
-                var l0_sst_compacted = std.AutoHashMap(usize, struct {});
+                var l0_sst_compacted = std.AutoHashMap(usize, struct {}).init(state.allocator);
                 defer l0_sst_compacted.deinit();
                 for (task.upper_level_sst_ids.items) |sst_id| {
                     try l0_sst_compacted.put(sst_id, .{});

@@ -77,9 +77,6 @@ pub fn init(allocator: std.mem.Allocator, iters: std.ArrayList(StorageIteratorPt
 
     // PS: the last iter has the highest priority
     for (iters.items, 0..) |sp, i| {
-        var spp = sp;
-        defer spp.release();
-
         if (!sp.load().isEmpty()) {
             const hw = try allocator.create(HeapWrapper);
             errdefer allocator.destroy(hw);
@@ -203,7 +200,13 @@ test "merge_iterator" {
     try m3.put("d", "5");
 
     var iters = std.ArrayList(StorageIteratorPtr).init(allocator);
-    defer iters.deinit();
+    defer {
+        for (iters.items) |sp| {
+            var spp = sp;
+            spp.release();
+        }
+        iters.deinit();
+    }
 
     const bound_a = MemTable.Bound.init("a", .included);
     const bound_z = MemTable.Bound.init("z", .included);
