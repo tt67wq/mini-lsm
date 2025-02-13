@@ -31,14 +31,14 @@ pub const CompactionOptions = union(enum) {
     }
 };
 
-pub const CompactionController = struct {
+pub const CompactionController = union(enum) {
     no_compaction: struct {},
     simple: SimpleLeveledCompactionController,
 
-    pub fn generateCompactionTask(self: CompactionController, state: *storage.StorageState) CompactionTask {
+    pub fn generateCompactionTask(self: CompactionController, state: *storage.StorageState) !?CompactionTask {
         switch (self) {
             .simple => |controller| {
-                const task = controller.generateCompactionTask(state);
+                const task = try controller.generateCompactionTask(state);
                 return .{
                     .simple = task,
                 };
@@ -86,7 +86,7 @@ const SimpleLeveledCompactionOptions = struct {
     max_levels: usize,
 };
 
-const SimpleLeveledCompactionTask = struct {
+pub const SimpleLeveledCompactionTask = struct {
     upper_level: ?usize,
     upper_level_sst_ids: std.ArrayList(usize),
     lower_level: usize,
