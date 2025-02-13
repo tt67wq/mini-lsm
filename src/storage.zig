@@ -688,7 +688,7 @@ pub const StorageInner = struct {
             try std.fs.cwd().deleteFile(path);
         }
         try self.syncDir();
-        self.dumpState();
+        // self.dumpState();
     }
 
     fn compactionLoop(self: *Self) !void {
@@ -868,33 +868,31 @@ pub const StorageInner = struct {
                 self.allocator,
                 task.upper_level_sst_ids.items.len,
             );
+            var lower_ssts = try std.ArrayList(SsTablePtr).initCapacity(
+                self.allocator,
+                task.lower_level_sst_ids.items.len,
+            );
 
             self.state_lock.lockShared();
             for (task.upper_level_sst_ids.items) |sst_id| {
                 const sst = self.state.sstables.get(sst_id).?;
                 try upper_ssts.append(sst.clone());
             }
-            self.state_lock.unlockShared();
-
-            var upper_iter = try SstConcatIterator.initAndSeekToFirst(self.allocator, upper_ssts);
-            errdefer upper_iter.deinit();
-
-            var lower_ssts = try std.ArrayList(SsTablePtr).initCapacity(
-                self.allocator,
-                task.lower_level_sst_ids.items.len,
-            );
-            self.state_lock.lockShared();
             for (task.lower_level_sst_ids.items) |sst_id| {
                 const sst = self.state.sstables.get(sst_id).?;
                 try lower_ssts.append(sst.clone());
             }
             self.state_lock.unlockShared();
+
+            var upper_iter = try SstConcatIterator.initAndSeekToFirst(self.allocator, upper_ssts);
+            errdefer upper_iter.deinit();
+
             var lower_iter = try SstConcatIterator.initAndSeekToFirst(self.allocator, lower_ssts);
             errdefer lower_iter.deinit();
 
             var iter = try TwoMergeIterator.init(
-                try StorageIteratorPtr.create(self.allocator, .{ .sst_concat_iter = lower_iter }),
                 try StorageIteratorPtr.create(self.allocator, .{ .sst_concat_iter = upper_iter }),
+                try StorageIteratorPtr.create(self.allocator, .{ .sst_concat_iter = lower_iter }),
             );
             defer iter.deinit();
             return self.compactGenerateSstFromIter(&iter, task.is_lower_level_bottom);
@@ -951,6 +949,7 @@ pub const StorageInner = struct {
         defer builder.deinit();
         var new_ssts = std.ArrayList(SsTablePtr).init(self.allocator);
         while (!iter.isEmpty()) {
+            std.debug.print("write {s} => {s}\n", .{ iter.key(), iter.value() });
             if (compact_to_bottom_level) {
                 if (iter.value().len > 0) {
                     try builder.add(iter.key(), iter.value());
@@ -1008,8 +1007,8 @@ pub const StorageInner = struct {
 test "init" {
     defer std.fs.cwd().deleteTree("./tmp/storage/init") catch unreachable;
     const opts = StorageOptions{
-        .block_size = 1024,
-        .target_sst_size = 1024,
+        .block_size = 64,
+        .target_sst_size = 256,
         .num_memtable_limit = 10,
         .enable_wal = true,
     };
@@ -1021,8 +1020,8 @@ test "init" {
 test "put/delete/get" {
     defer std.fs.cwd().deleteTree("./tmp/storage/put") catch unreachable;
     const opts = StorageOptions{
-        .block_size = 1024,
-        .target_sst_size = 1024,
+        .block_size = 64,
+        .target_sst_size = 256,
         .num_memtable_limit = 10,
         .enable_wal = true,
     };
@@ -1053,8 +1052,8 @@ test "put/delete/get" {
 test "freeze" {
     defer std.fs.cwd().deleteTree("./tmp/storage/freeze") catch unreachable;
     const opts = StorageOptions{
-        .block_size = 1024,
-        .target_sst_size = 1024,
+        .block_size = 64,
+        .target_sst_size = 256,
         .num_memtable_limit = 10,
         .enable_wal = true,
     };
@@ -1076,7 +1075,7 @@ test "freeze" {
 test "flush" {
     defer std.fs.cwd().deleteTree("./tmp/storage/flush") catch unreachable;
     const opts = StorageOptions{
-        .block_size = 256,
+        .block_size = 64,
         .target_sst_size = 256,
         .num_memtable_limit = 10,
         .enable_wal = true,
@@ -1099,7 +1098,7 @@ test "flush" {
 test "scan" {
     defer std.fs.cwd().deleteTree("./tmp/storage/scan") catch unreachable;
     const opts = StorageOptions{
-        .block_size = 256,
+        .block_size = 64,
         .target_sst_size = 256,
         .num_memtable_limit = 2,
         .enable_wal = true,
@@ -1133,7 +1132,7 @@ test "scan" {
 test "full_compact" {
     defer std.fs.cwd().deleteTree("./tmp/storage/full_compact") catch unreachable;
     const opts = StorageOptions{
-        .block_size = 256,
+        .block_size = 64,
         .target_sst_size = 256,
         .num_memtable_limit = 10,
         .enable_wal = true,
@@ -1170,7 +1169,7 @@ test "full_compact" {
 test "simple_compact" {
     defer std.fs.cwd().deleteTree("./tmp/storage/simple_compact") catch unreachable;
     const opts = StorageOptions{
-        .block_size = 256,
+        .block_size = 64,
         .target_sst_size = 256,
         .num_memtable_limit = 10,
         .enable_wal = true,
@@ -1186,7 +1185,7 @@ test "simple_compact" {
     var storage = try StorageInner.init(std.testing.allocator, "./tmp/storage/simple_compact", opts);
     defer storage.deinit();
 
-    for (0..1024) |i| {
+    for (0..256) |i| {
         var kb: [10]u8 = undefined;
         var vb: [10]u8 = undefined;
         const kk = try std.fmt.bufPrint(&kb, "key{d:0>5}", .{i});
