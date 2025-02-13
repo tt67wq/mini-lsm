@@ -874,7 +874,7 @@ pub const StorageInner = struct {
             self.state_lock.unlockShared();
 
             var upper_iter = try SstConcatIterator.initAndSeekToFirst(self.allocator, upper_ssts);
-            defer upper_iter.deinit();
+            errdefer upper_iter.deinit();
 
             var lower_ssts = try std.ArrayList(SsTablePtr).initCapacity(
                 self.allocator,
@@ -887,7 +887,7 @@ pub const StorageInner = struct {
             }
             self.state_lock.unlockShared();
             var lower_iter = try SstConcatIterator.initAndSeekToFirst(self.allocator, lower_ssts);
-            defer lower_iter.deinit();
+            errdefer lower_iter.deinit();
 
             var iter = try TwoMergeIterator.init(
                 try StorageIteratorPtr.create(self.allocator, .{ .sst_concat_iter = lower_iter }),
@@ -919,7 +919,7 @@ pub const StorageInner = struct {
             self.state_lock.unlockShared();
 
             var upper_iter = try MergeIterators.init(self.allocator, upper_iters);
-            defer upper_iter.deinit();
+            errdefer upper_iter.deinit();
 
             var lower_ssts = try std.ArrayList(SsTablePtr).initCapacity(
                 self.allocator,
@@ -933,7 +933,7 @@ pub const StorageInner = struct {
             }
             self.state_lock.unlockShared();
             var lower_iter = try SstConcatIterator.initAndSeekToFirst(self.allocator, lower_ssts);
-            defer lower_iter.deinit();
+            errdefer lower_iter.deinit();
             var iter = try TwoMergeIterator.init(
                 try StorageIteratorPtr.create(self.allocator, .{ .merge_iterators = upper_iter }),
                 try StorageIteratorPtr.create(self.allocator, .{ .sst_concat_iter = lower_iter }),
@@ -1190,5 +1190,16 @@ test "simple_compact" {
 
         try storage.triggerFlush();
         try storage.triggerCompaction();
+    }
+
+    var iter = try storage.scan(
+        Bound.init("", .unbounded),
+        Bound.init("", .unbounded),
+    );
+    defer iter.deinit();
+
+    while (!iter.isEmpty()) {
+        std.debug.print("key: {s} value: {s}\n", .{ iter.key(), iter.value() });
+        try iter.next();
     }
 }
