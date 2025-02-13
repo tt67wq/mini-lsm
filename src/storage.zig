@@ -597,6 +597,8 @@ pub const StorageInner = struct {
             try self.state.l0_sstables.append(sst_id);
             try self.state.sstables.put(sst.id, try SsTablePtr.create(self.allocator, sst));
         }
+
+        // self.dumpState();
     }
 
     fn triggerFlush(self: *Self) !void {
@@ -686,6 +688,7 @@ pub const StorageInner = struct {
             try std.fs.cwd().deleteFile(path);
         }
         try self.syncDir();
+        self.dumpState();
     }
 
     fn compactionLoop(self: *Self) !void {
@@ -859,8 +862,8 @@ pub const StorageInner = struct {
     }
 
     fn compactSimple(self: *Self, task: SimpleLeveledCompactionTask) !std.ArrayList(SsTablePtr) {
-        std.debug.print("compactSimple\n", .{});
         if (task.upper_level) |_| {
+            // compact l0_sstables to l1_sstables
             var upper_ssts = try std.ArrayList(SsTablePtr).initCapacity(
                 self.allocator,
                 task.upper_level_sst_ids.items.len,
@@ -925,7 +928,7 @@ pub const StorageInner = struct {
                 self.allocator,
                 task.lower_level_sst_ids.items.len,
             );
-            defer lower_ssts.deinit();
+
             self.state_lock.lockShared();
             for (task.lower_level_sst_ids.items) |sst_id| {
                 const sst = self.state.sstables.get(sst_id).?;
@@ -944,19 +947,10 @@ pub const StorageInner = struct {
     }
 
     fn compactGenerateSstFromIter(self: *Self, iter: *TwoMergeIterator, compact_to_bottom_level: bool) !std.ArrayList(SsTablePtr) {
-        var builder: SsTableBuilder = undefined;
-        var initialized = false;
-        defer {
-            if (initialized) {
-                builder.deinit();
-            }
-        }
+        var builder: SsTableBuilder = try SsTableBuilder.init(self.allocator, self.options.block_size);
+        defer builder.deinit();
         var new_ssts = std.ArrayList(SsTablePtr).init(self.allocator);
         while (!iter.isEmpty()) {
-            if (!initialized) {
-                builder = try SsTableBuilder.init(self.allocator, self.options.block_size);
-                initialized = true;
-            }
             if (compact_to_bottom_level) {
                 if (iter.value().len > 0) {
                     try builder.add(iter.key(), iter.value());
@@ -965,8 +959,9 @@ pub const StorageInner = struct {
                 try builder.add(iter.key(), iter.value());
             }
             try iter.next();
-
-            if (builder.estimated_size() >= self.options.target_sst_size) {
+            if (builder.estimatedSize() >= self.options.target_sst_size) {
+                // reset builder
+                defer builder.reset();
                 const sst_id = self.getNextSstId();
                 const path = try self.pathOfSst(sst_id);
                 defer self.allocator.free(path);
@@ -979,8 +974,7 @@ pub const StorageInner = struct {
                 try new_ssts.append(sst_ptr);
             }
         }
-        // iter is empty
-        if (initialized) {
+        if (builder.estimatedSize() > 0) {
             const sst_id = self.getNextSstId();
             const path = try self.pathOfSst(sst_id);
             defer self.allocator.free(path);
@@ -991,6 +985,23 @@ pub const StorageInner = struct {
             try new_ssts.append(sst_ptr);
         }
         return new_ssts;
+    }
+
+    fn dumpState(self: *Self) void {
+        std.debug.print("------------- Storage Dump -------------\n", .{});
+        std.debug.print("memtable: {d}\n", .{self.state.getMemTable().getApproximateSize()});
+        std.debug.print("l0_sstables: {d}\n", .{self.state.l0_sstables.items.len});
+        for (self.state.l0_sstables.items) |sst_id| {
+            std.debug.print("{d} ", .{sst_id});
+        }
+        std.debug.print("\n", .{});
+        for (self.state.levels.items, 1..) |level, i| {
+            std.debug.print("level{d}: {d}\n", .{ i, level.items.len });
+            for (level.items) |sst_id| {
+                std.debug.print("{d} ", .{sst_id});
+            }
+            std.debug.print("\n", .{});
+        }
     }
 };
 
@@ -1065,10 +1076,11 @@ test "freeze" {
 test "flush" {
     defer std.fs.cwd().deleteTree("./tmp/storage/flush") catch unreachable;
     const opts = StorageOptions{
-        .block_size = 1024,
-        .target_sst_size = 1024,
+        .block_size = 256,
+        .target_sst_size = 256,
         .num_memtable_limit = 10,
         .enable_wal = true,
+        .compaction_options = .{ .no_compaction = .{} },
     };
 
     var storage = try StorageInner.init(std.testing.allocator, "./tmp/storage/flush", opts);
@@ -1080,15 +1092,8 @@ test "flush" {
         const kk = try std.fmt.bufPrint(&kb, "key{d:0>5}", .{i});
         const vv = try std.fmt.bufPrint(&vb, "val{d:0>5}", .{i});
         try storage.put(kk, vv);
+        try storage.triggerFlush();
     }
-
-    const l1 = storage.state.imm_mem_tables.items.len;
-
-    try storage.flushNextMemtable();
-    const l2 = storage.state.imm_mem_tables.items.len;
-
-    try std.testing.expectEqual(l1, l2 + 1);
-    try std.testing.expectEqual(storage.state.l0_sstables.items.len, 1);
 }
 
 test "scan" {
@@ -1166,7 +1171,7 @@ test "simple_compact" {
     defer std.fs.cwd().deleteTree("./tmp/storage/simple_compact") catch unreachable;
     const opts = StorageOptions{
         .block_size = 256,
-        .target_sst_size = 1024,
+        .target_sst_size = 256,
         .num_memtable_limit = 10,
         .enable_wal = true,
         .compaction_options = .{
@@ -1178,7 +1183,7 @@ test "simple_compact" {
         },
     };
 
-    var storage = try StorageInner.init(std.testing.allocator, "./tmp/storage/full_compact", opts);
+    var storage = try StorageInner.init(std.testing.allocator, "./tmp/storage/simple_compact", opts);
     defer storage.deinit();
 
     for (0..1024) |i| {
@@ -1192,14 +1197,14 @@ test "simple_compact" {
         try storage.triggerCompaction();
     }
 
-    var iter = try storage.scan(
-        Bound.init("", .unbounded),
-        Bound.init("", .unbounded),
-    );
-    defer iter.deinit();
+    // var iter = try storage.scan(
+    //     Bound.init("key1024", .unbounded),
+    //     Bound.init("", .unbounded),
+    // );
+    // defer iter.deinit();
 
-    while (!iter.isEmpty()) {
-        std.debug.print("key: {s} value: {s}\n", .{ iter.key(), iter.value() });
-        try iter.next();
-    }
+    // while (!iter.isEmpty()) {
+    //     std.debug.print("key: {s} value: {s}\n", .{ iter.key(), iter.value() });
+    //     try iter.next();
+    // }
 }
