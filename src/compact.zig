@@ -136,6 +136,9 @@ pub const SimpleLeveledCompactionController = struct {
         // check size_ration_percent for compaction of Ln to Ln+1
         for (1..self.options.max_levels) |level| {
             const lower_level = level + 1;
+            if (level_sizes.items[level] == 0) {
+                continue;
+            }
             const size_ration = level_sizes.items[lower_level] * 100 / level_sizes.items[level];
             if (size_ration < self.options.size_ration_percent) {
                 std.log.info("compaction of L{d} to L{d} because L{d} size ratio {d} < {d}\n", .{ level, lower_level, level, size_ration, self.options.size_ration_percent });
