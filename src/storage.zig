@@ -23,6 +23,7 @@ const CompactionTask = compact.CompactionTask;
 const ForceFullCompaction = compact.ForceFullCompaction;
 const CompactionController = compact.CompactionController;
 const SimpleLeveledCompactionController = compact.SimpleLeveledCompactionController;
+const SimpleLeveledCompactionTask = compact.SimpleLeveledCompactionTask;
 
 pub const StorageOptions = struct {
     block_size: usize,
@@ -134,10 +135,8 @@ pub const StorageInner = struct {
 
         // compaction controller
         const compaction_controller = switch (options.compaction_options) {
-            .simple => |option| {
-                CompactionController{ .simple = try SimpleLeveledCompactionController.init(option) };
-            },
-            .no_compaction => CompactionController{ .no_compaction = {} },
+            .simple => |option| CompactionController{ .simple = SimpleLeveledCompactionController.init(option) },
+            .no_compaction => CompactionController{ .no_compaction = .{} },
         };
 
         // manifest
@@ -594,10 +593,95 @@ pub const StorageInner = struct {
         }
     }
 
-    // fn triggerCompaction(self: *Self) !void {}
+    fn triggerCompaction(self: *Self) !void {
+        var task: CompactionTask = undefined;
+        {
+            self.state_lock.lockShared();
+            defer self.state_lock.unlockShared();
+            if (try self.compaction_controller.generateCompactionTask(self.state)) |ct| {
+                task = ct;
+            } else {
+                return;
+            }
+        }
+        defer task.deinit();
+        var sstables = try self.compact(task);
+        defer {
+            for (sstables.items) |sst| {
+                var p = sst;
+                p.release();
+            }
+            sstables.deinit();
+        }
+        var output = std.ArrayList(usize).init(self.allocator);
+        defer output.deinit();
+        for (sstables.items) |sst| {
+            try output.append(@intCast(sst.get().sstId()));
+        }
+
+        // sst to remove
+        var ssts_to_remove = std.ArrayList(SsTablePtr).init(self.allocator);
+        defer {
+            for (ssts_to_remove.items) |sst| {
+                var p = sst;
+                p.release();
+            }
+            ssts_to_remove.deinit();
+        }
+        {
+            var new_sst_ids = std.ArrayList(usize).init(self.allocator);
+            defer new_sst_ids.deinit();
+
+            self.state_lock.lock();
+            defer self.state_lock.unlock();
+
+            for (sstables.items) |sst| {
+                const id: usize = @intCast(sst.get().sstId());
+                try new_sst_ids.append(id);
+                try self.state.sstables.put(id, sst.clone());
+            }
+
+            var file_to_remove = try self.compaction_controller.applyCompactionResult(
+                &self.state,
+                task,
+                output.items,
+            );
+            defer file_to_remove.deinit();
+
+            for (file_to_remove.items) |id| {
+                if (self.state.sstables.fetchRemove(id)) |kv| {
+                    try ssts_to_remove.append(kv.value);
+                }
+            }
+            try self.syncDir();
+        }
+
+        for (ssts_to_remove.items) |sst| {
+            const path = try self.pathOfSst(sst.get().sstId());
+            defer self.allocator.free(path);
+            try std.fs.cwd().deleteFile(path, .{});
+        }
+        try self.syncDir();
+    }
+
+    fn compactionLoop(self: *Self) !void {
+        switch (self.compaction_controller) {
+            .no_compaction => {},
+            inline else => {
+                while (!self.terminate.isSet()) {
+                    try self.triggerCompaction();
+                    try self.terminate.timedWait(50 * std.time.ns_per_ms);
+                }
+            },
+        }
+    }
 
     pub fn spawnFlushThread(self: *Self) void {
         self.wg.spawnManager(self.flushLoop, .{});
+    }
+
+    pub fn spawnCompactionThread(self: *Self) void {
+        self.wg.spawnManager(self.compactionLoop, .{});
     }
 
     pub fn forceFullCompaction(self: *Self) !void {
@@ -696,7 +780,9 @@ pub const StorageInner = struct {
             .force_full_compaction => |f| {
                 return self.compactForceFull(f);
             },
-            inline else => unreachable,
+            .simple => |s| {
+                return self.compactSimple(s);
+            },
         }
     }
 
@@ -740,6 +826,84 @@ pub const StorageInner = struct {
         defer iter.deinit();
 
         return self.compactGenerateSstFromIter(&iter, true);
+    }
+
+    fn compactSimple(self: *Self, task: SimpleLeveledCompactionTask) !std.ArrayList(SsTablePtr) {
+        if (task.upper_level) |_| {
+            var upper_ssts = try std.ArrayList(SsTablePtr).initCapacity(
+                self.allocator,
+                task.upper_level_sst_ids.items.len,
+            );
+
+            self.state_lock.lockShared();
+            for (task.upper_level_sst_ids.items) |sst_id| {
+                const sst = self.state.sstables.get(sst_id).?;
+                try upper_ssts.append(sst.clone());
+            }
+            self.state_lock.unlockShared();
+
+            var upper_iter = try SstConcatIterator.initAndSeekToFirst(self.allocator, upper_ssts);
+            defer upper_iter.deinit();
+
+            var lower_ssts = try std.ArrayList(SsTablePtr).initCapacity(
+                self.allocator,
+                task.lower_level_sst_ids.items.len,
+            );
+            self.state_lock.lockShared();
+            for (task.lower_level_sst_ids.items) |sst_id| {
+                const sst = self.state.sstables.get(sst_id).?;
+                try lower_ssts.append(sst.clone());
+            }
+            self.state_lock.unlockShared();
+            var lower_iter = try SstConcatIterator.initAndSeekToFirst(self.allocator, lower_ssts);
+            defer lower_iter.deinit();
+
+            var iter = try TwoMergeIterator.init(
+                try StorageIteratorPtr.create(self.allocator, .{ .sst_concat_iter = lower_iter }),
+                try StorageIteratorPtr.create(self.allocator, .{ .sst_concat_iter = upper_iter }),
+            );
+            defer iter.deinit();
+            return self.compactGenerateSstFromIter(&iter, task.is_lower_level_bottom);
+        } else {
+            var upper_iters = try std.ArrayList(StorageIteratorPtr).initCapacity(
+                self.allocator,
+                task.upper_level_sst_ids.items.len,
+            );
+            defer upper_iters.deinit();
+
+            self.state_lock.lockShared();
+            for (task.upper_level_sst_ids.items) |sst_id| {
+                const sst = self.state.sstables.get(sst_id).?;
+                const ss_iter = try SsTableIterator.initAndSeekToFirst(self.allocator, sst.clone());
+                try upper_iters.append(try StorageIteratorPtr.create(self.allocator, .{
+                    .ss_table_iter = ss_iter,
+                }));
+            }
+            self.state_lock.unlockShared();
+
+            var upper_iter = try MergeIterators.init(self.allocator, upper_iters);
+            defer upper_iter.deinit();
+
+            var lower_ssts = try std.ArrayList(SsTablePtr).initCapacity(
+                self.allocator,
+                task.lower_level_sst_ids.items.len,
+            );
+            defer lower_ssts.deinit();
+            self.state_lock.lockShared();
+            for (task.lower_level_sst_ids.items) |sst_id| {
+                const sst = self.state.sstables.get(sst_id).?;
+                try lower_ssts.append(sst.clone());
+            }
+            self.state_lock.unlockShared();
+            var lower_iter = try SstConcatIterator.initAndSeekToFirst(self.allocator, lower_ssts);
+            defer lower_iter.deinit();
+            var iter = try TwoMergeIterator.init(
+                try StorageIteratorPtr.create(self.allocator, .{ .merge_iterators = upper_iter }),
+                try StorageIteratorPtr.create(self.allocator, .{ .sst_concat_iter = lower_iter }),
+            );
+            defer iter.deinit();
+            return self.compactGenerateSstFromIter(&iter, task.is_lower_level_bottom);
+        }
     }
 
     fn compactGenerateSstFromIter(self: *Self, iter: *TwoMergeIterator, compact_to_bottom_level: bool) !std.ArrayList(SsTablePtr) {
