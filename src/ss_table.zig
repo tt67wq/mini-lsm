@@ -44,6 +44,23 @@ pub const SsTableBuilder = struct {
         };
     }
 
+    pub fn reset(self: *Self) void {
+        self.builder.reset();
+        for (self.meta.items) |meta| {
+            meta.deinit();
+        }
+        self.meta.clearAndFree();
+        self.data.clearAndFree();
+        if (self.first_key) |first_key| {
+            self.allocator.free(first_key);
+        }
+        if (self.last_key) |last_key| {
+            self.allocator.free(last_key);
+        }
+        self.first_key = null;
+        self.last_key = null;
+    }
+
     pub fn deinit(self: *Self) void {
         self.builder.deinit();
         for (self.meta.items) |meta| {
@@ -95,6 +112,9 @@ pub const SsTableBuilder = struct {
 
     // | encoded_block0 | checksum: 4 | encoded_block1 | checksum: 4 | ...... |
     fn finishBlock(self: *Self) !void {
+        if (self.builder.isEmpty()) {
+            return;
+        }
         var bo = self.builder;
         // reset block
         defer bo.reset();
@@ -115,7 +135,7 @@ pub const SsTableBuilder = struct {
         try self.data.writer().writeInt(u32, cksm, .big);
     }
 
-    pub fn estimated_size(self: Self) usize {
+    pub fn estimatedSize(self: Self) usize {
         return self.data.items.len;
     }
 

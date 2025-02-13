@@ -26,11 +26,11 @@ pub const BlockBuilder = struct {
         if (self.first_key.len > 0) self.allocator.free(self.first_key);
     }
 
-    pub fn is_empty(self: Self) bool {
+    pub fn isEmpty(self: Self) bool {
         return self.offset_v.items.len == 0;
     }
 
-    fn estimated_size(self: Self) usize {
+    fn estimatedSize(self: Self) usize {
         return @sizeOf(u16) + self.offset_v.items.len * @sizeOf(u16) + self.data_v.items.len;
     }
 
@@ -41,7 +41,7 @@ pub const BlockBuilder = struct {
         self.first_key = "";
     }
 
-    fn calculate_overlap(first_key: []const u8, key: []const u8) usize {
+    fn calculateOverlap(first_key: []const u8, key: []const u8) usize {
         var i: usize = 0;
         // prefix match
         while (true) : (i += 1) {
@@ -59,7 +59,7 @@ pub const BlockBuilder = struct {
         std.debug.assert(key.len > 0); // key must not be empty
 
         const vSize = if (value) |v| v.len else 0;
-        if ((self.estimated_size() + key.len + vSize + 3 * @sizeOf(u16) > self.block_size) and !self.is_empty()) {
+        if ((self.estimatedSize() + key.len + vSize + 3 * @sizeOf(u16) > self.block_size) and !self.isEmpty()) {
             return false;
         }
         try self.doAdd(key, value);
@@ -73,7 +73,7 @@ pub const BlockBuilder = struct {
     fn doAdd(self: *Self, key: []const u8, value: ?[]const u8) !void {
         // add the offset of the data into the offset array
         try self.offset_v.append(@intCast(self.data_v.items.len));
-        const overlap = calculate_overlap(self.first_key, key);
+        const overlap = calculateOverlap(self.first_key, key);
 
         var dw = self.data_v.writer();
         // encode key overlap
@@ -94,7 +94,7 @@ pub const BlockBuilder = struct {
     }
 
     pub fn build(self: *Self) !Block {
-        if (self.is_empty()) {
+        if (self.isEmpty()) {
             @panic("block is empty");
         }
         return Block.init(

@@ -125,7 +125,7 @@ pub const SimpleLeveledCompactionController = struct {
 
         // check level0_file_num_compaction_trigger for compaction of L0 to L1
         if (state.l0_sstables.items.len >= self.options.level0_file_num_compaction_trigger) {
-            std.log.info("compaction of L0 to L1 because L0 has {d} SSTS >= {d}\n", .{ state.l0_sstables.items.len, self.options.level0_file_num_compaction_trigger });
+            std.debug.print("compaction of L0 to L1 because L0 has {d} SSTS >= {d}\n", .{ state.l0_sstables.items.len, self.options.level0_file_num_compaction_trigger });
             return .{
                 .upper_level = null,
                 .upper_level_sst_ids = try state.l0_sstables.clone(),
@@ -143,7 +143,7 @@ pub const SimpleLeveledCompactionController = struct {
             }
             const size_ration = level_sizes.items[lower_level] * 100 / level_sizes.items[level];
             if (size_ration < self.options.size_ration_percent) {
-                std.log.info("compaction of L{d} to L{d} because L{d} size ratio {d} < {d}\n", .{ level, lower_level, level, size_ration, self.options.size_ration_percent });
+                std.debug.print("compaction of L{d} to L{d} because L{d} size ratio {d} < {d}\n", .{ level, lower_level, level, size_ration, self.options.size_ration_percent });
                 return .{
                     .upper_level = level,
                     .upper_level_sst_ids = try state.levels.items[level - 1].clone(),
