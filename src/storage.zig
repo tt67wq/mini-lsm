@@ -1185,7 +1185,7 @@ test "simple_compact" {
     var storage = try StorageInner.init(std.testing.allocator, "./tmp/storage/simple_compact", opts);
     defer storage.deinit();
 
-    for (0..256) |i| {
+    for (0..512) |i| {
         var kb: [10]u8 = undefined;
         var vb: [10]u8 = undefined;
         const kk = try std.fmt.bufPrint(&kb, "key{d:0>5}", .{i});
@@ -1196,14 +1196,14 @@ test "simple_compact" {
         try storage.triggerCompaction();
     }
 
-    // var iter = try storage.scan(
-    //     Bound.init("key1024", .unbounded),
-    //     Bound.init("", .unbounded),
-    // );
-    // defer iter.deinit();
+    var iter = try storage.scan(
+        Bound.init("key1024", .unbounded),
+        Bound.init("", .unbounded),
+    );
+    defer iter.deinit();
 
-    // while (!iter.isEmpty()) {
-    //     std.debug.print("key: {s} value: {s}\n", .{ iter.key(), iter.value() });
-    //     try iter.next();
-    // }
+    while (!iter.isEmpty()) {
+        std.debug.print("key: {s} value: {s}\n", .{ iter.key(), iter.value() });
+        try iter.next();
+    }
 }
