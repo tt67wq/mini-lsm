@@ -949,7 +949,7 @@ pub const StorageInner = struct {
         defer builder.deinit();
         var new_ssts = std.ArrayList(SsTablePtr).init(self.allocator);
         while (!iter.isEmpty()) {
-            std.debug.print("write {s} => {s}\n", .{ iter.key(), iter.value() });
+            // std.debug.print("write {s} => {s}\n", .{ iter.key(), iter.value() });
             if (compact_to_bottom_level) {
                 if (iter.value().len > 0) {
                     try builder.add(iter.key(), iter.value());
@@ -957,10 +957,9 @@ pub const StorageInner = struct {
             } else {
                 try builder.add(iter.key(), iter.value());
             }
-            try iter.next();
             if (builder.estimatedSize() >= self.options.target_sst_size) {
                 // reset builder
-                defer builder.reset();
+                defer builder.reset() catch unreachable;
                 const sst_id = self.getNextSstId();
                 const path = try self.pathOfSst(sst_id);
                 defer self.allocator.free(path);
@@ -972,6 +971,7 @@ pub const StorageInner = struct {
 
                 try new_ssts.append(sst_ptr);
             }
+            try iter.next();
         }
         if (builder.estimatedSize() > 0) {
             const sst_id = self.getNextSstId();
