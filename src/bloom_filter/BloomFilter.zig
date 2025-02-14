@@ -38,16 +38,13 @@ pub fn init(
     };
 }
 
-pub fn clone(self: Self, allocator: std.mem.Allocator) !Self {
-    return Self{
-        .num_hash_funcs = self.num_hash_funcs,
-        .bits = try self.bits.clone(allocator),
-    };
-}
-
 /// Deinitialize and free resources
 pub fn deinit(self: *Self) void {
     self.bits.deinit();
+}
+
+pub fn clear(self: *Self) !void {
+    try self.bits.clear();
 }
 
 pub fn encode(self: Self, allocator: std.mem.Allocator) ![]u8 {

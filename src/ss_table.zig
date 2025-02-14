@@ -44,7 +44,7 @@ pub const SsTableBuilder = struct {
         };
     }
 
-    pub fn reset(self: *Self) void {
+    pub fn reset(self: *Self) !void {
         self.builder.reset();
         for (self.meta.items) |meta| {
             meta.deinit();
@@ -59,6 +59,7 @@ pub const SsTableBuilder = struct {
         }
         self.first_key = null;
         self.last_key = null;
+        try self.bloom.get().clear();
     }
 
     pub fn deinit(self: *Self) void {
