@@ -412,3 +412,42 @@ pub const SstConcatIterator = struct {
         return 1;
     }
 };
+
+test "sst concat iterator" {
+    defer {
+        std.fs.cwd().deleteTree("./tmp/ss_concat_iter") catch {
+            std.debug.panic("delete tmp dir failed", .{});
+        };
+    }
+    try std.fs.cwd().makePath("./tmp/ss_concat_iter");
+
+    const SsTableBuilder = ss_table.SsTableBuilder;
+
+    var ssts = std.ArrayList(SsTablePtr).init(std.testing.allocator);
+    for (0..4) |i| {
+        var sb = try SsTableBuilder.init(std.testing.allocator, 256);
+        defer sb.deinit();
+
+        for (0..16) |j| {
+            var kb: [64]u8 = undefined;
+            var vb: [64]u8 = undefined;
+            const key = try std.fmt.bufPrint(&kb, "key{:0>5}", .{i * 100 + j});
+            const value = try std.fmt.bufPrint(&vb, "value{:0>5}", .{i * 100 + j});
+            try sb.add(key, value);
+        }
+        const path = try std.fmt.allocPrint(std.testing.allocator, "./tmp/ss_concat_iter/{d:0>5}", .{i});
+        defer std.testing.allocator.free(path);
+        const table = try sb.build(i, null, path);
+        var ssp = try SsTablePtr.create(std.testing.allocator, table);
+        errdefer ssp.deinit();
+        try ssts.append(ssp);
+    }
+
+    var iter = try SstConcatIterator.initAndSeekToFirst(std.testing.allocator, ssts);
+    defer iter.deinit();
+
+    while (!iter.isEmpty()) {
+        std.debug.print("{s} {s}\n", .{ iter.key(), iter.value() });
+        try iter.next();
+    }
+}
