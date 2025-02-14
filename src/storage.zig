@@ -299,14 +299,13 @@ pub const StorageInner = struct {
             switch (record) {
                 .put => |pp| {
                     try self.state.getMemTable().put(pp.key, pp.value);
-                    try self.tryFreeze(self.state.getMemTable().getApproximateSize());
                 },
                 .delete => |dd| {
                     // we use "" as the tombstone value
                     try self.state.getMemTable().put(dd, "");
-                    try self.tryFreeze(self.state.getMemTable().getApproximateSize());
                 },
             }
+            try self.tryFreeze(self.state.getMemTable().getApproximateSize());
         }
     }
 
