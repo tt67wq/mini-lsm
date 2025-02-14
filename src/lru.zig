@@ -314,3 +314,16 @@ test "common.lru: put works as expected" {
     try testing.expectEqual(possible_old, null);
     try testing.expectEqual(@as(usize, 3), cache.get("b").?);
 }
+
+test "struct as key" {
+    const Key = struct {
+        a: u64,
+        b: u64,
+    };
+    var cache = try LruCache(.non_locking, Key, []const u8).init(testing.allocator, 4);
+    defer cache.deinit();
+    try cache.insert(.{ .a = 1, .b = 2 }, "a");
+    const old = cache.put(.{ .a = 1, .b = 2 }, "b");
+    try testing.expectEqualStrings("a", old.?);
+    try testing.expectEqualStrings("b", cache.get(.{ .a = 1, .b = 2 }).?);
+}
