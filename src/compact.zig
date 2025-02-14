@@ -167,6 +167,10 @@ pub const SimpleLeveledCompactionController = struct {
         errdefer files_to_remove.deinit();
 
         if (task.upper_level) |upper_level| {
+            std.debug.assert(sliceEquals(
+                task.upper_level_sst_ids.items,
+                state.levels.items[upper_level - 1].items,
+            ));
             try files_to_remove.appendSlice(task.upper_level_sst_ids.items);
             state.levels.items[upper_level - 1].clearAndFree();
         } else {
@@ -191,7 +195,10 @@ pub const SimpleLeveledCompactionController = struct {
             state.l0_sstables.deinit();
             state.l0_sstables = new_l0_sstables;
         }
-
+        std.debug.assert(sliceEquals(
+            task.lower_level_sst_ids.items,
+            state.levels.items[task.lower_level - 1].items,
+        ));
         try files_to_remove.appendSlice(task.lower_level_sst_ids.items);
         state.levels.items[task.lower_level - 1].clearAndFree();
         try state.levels.items[task.lower_level - 1].appendSlice(output);
@@ -199,3 +206,15 @@ pub const SimpleLeveledCompactionController = struct {
         return files_to_remove;
     }
 };
+
+fn sliceEquals(a: []const usize, b: []const usize) bool {
+    if (a.len != b.len) {
+        return false;
+    }
+    for (a, 0..) |item, i| {
+        if (item != b[i]) {
+            return false;
+        }
+    }
+    return true;
+}
