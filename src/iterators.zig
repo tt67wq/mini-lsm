@@ -61,53 +61,6 @@ pub const StorageIterator = union(enum) {
     }
 };
 
-// pub const CombinedIteratorPtr = smart_pointer.SmartPointer(CombinedIterator);
-
-// pub const CombinedIterator = union(enum) {
-//     storage_iter: StorageIterator,
-//     merge_iterators: MergeIterators,
-//     two_merge_iter: TwoMergeIterator,
-
-//     pub fn deinit(self: *CombinedIterator) void {
-//         switch (self.*) {
-//             inline else => |impl| {
-//                 var tmp = impl;
-//                 try tmp.deinit();
-//             },
-//         }
-//     }
-
-//     pub fn isEmpty(self: CombinedIterator) bool {
-//         switch (self) {
-//             inline else => |impl| return impl.isEmpty(),
-//         }
-//     }
-//     pub fn next(self: *CombinedIterator) anyerror!void {
-//         switch (self.*) {
-//             inline else => |impl| {
-//                 var tmp = impl;
-//                 try tmp.next();
-//             },
-//         }
-//     }
-//     pub fn key(self: CombinedIterator) []const u8 {
-//         switch (self) {
-//             inline else => |impl| return impl.key(),
-//         }
-//     }
-//     pub fn value(self: CombinedIterator) []const u8 {
-//         switch (self) {
-//             inline else => |impl| return impl.value(),
-//         }
-//     }
-
-//     pub fn numActiveIterators(self: CombinedIterator) usize {
-//         switch (self) {
-//             inline else => |impl| return impl.numActiveIterators(),
-//         }
-//     }
-// };
-
 pub const TwoMergeIterator = struct {
     a: StorageIteratorPtr,
     b: StorageIteratorPtr,
@@ -446,6 +399,72 @@ test "sst concat iterator" {
     var iter = try SstConcatIterator.initAndSeekToFirst(std.testing.allocator, ssts);
     defer iter.deinit();
 
+    while (!iter.isEmpty()) {
+        std.debug.print("{s} {s}\n", .{ iter.key(), iter.value() });
+        try iter.next();
+    }
+}
+
+test "two merge iterator" {
+    defer {
+        std.fs.cwd().deleteTree("./tmp/two_merge_iter") catch {
+            std.debug.panic("delete tmp dir failed", .{});
+        };
+    }
+    try std.fs.cwd().makePath("./tmp/two_merge_iter");
+
+    const SsTableBuilder = ss_table.SsTableBuilder;
+
+    var ssts1 = std.ArrayList(SsTablePtr).init(std.testing.allocator);
+    var ssts2 = std.ArrayList(SsTablePtr).init(std.testing.allocator);
+    for (0..4) |i| {
+        var sb = try SsTableBuilder.init(std.testing.allocator, 256);
+        defer sb.deinit();
+
+        for (0..16) |j| {
+            var kb: [64]u8 = undefined;
+            var vb: [64]u8 = undefined;
+            const key = try std.fmt.bufPrint(&kb, "key{:0>5}", .{i * 100 + j});
+            const value = try std.fmt.bufPrint(&vb, "value{:0>5}", .{i * 100 + j});
+            try sb.add(key, value);
+        }
+        const path = try std.fmt.allocPrint(std.testing.allocator, "./tmp/two_merge_iter/{d:0>5}", .{i});
+        defer std.testing.allocator.free(path);
+        const table = try sb.build(i, null, path);
+        var ssp = try SsTablePtr.create(std.testing.allocator, table);
+        errdefer ssp.deinit();
+        try ssts1.append(ssp);
+    }
+
+    for (5..9) |i| {
+        var sb = try SsTableBuilder.init(std.testing.allocator, 256);
+        defer sb.deinit();
+
+        for (0..16) |j| {
+            var kb: [64]u8 = undefined;
+            var vb: [64]u8 = undefined;
+            const key = try std.fmt.bufPrint(&kb, "key{:0>5}", .{i * 100 + j});
+            const value = try std.fmt.bufPrint(&vb, "value{:0>5}", .{i * 100 + j});
+            try sb.add(key, value);
+        }
+        const path = try std.fmt.allocPrint(std.testing.allocator, "./tmp/two_merge_iter/{d:0>5}", .{i});
+        defer std.testing.allocator.free(path);
+        const table = try sb.build(i, null, path);
+        var ssp = try SsTablePtr.create(std.testing.allocator, table);
+        errdefer ssp.deinit();
+        try ssts2.append(ssp);
+    }
+
+    var iter1 = try SstConcatIterator.initAndSeekToFirst(std.testing.allocator, ssts1);
+    errdefer iter1.deinit();
+    var iter2 = try SstConcatIterator.initAndSeekToFirst(std.testing.allocator, ssts2);
+    errdefer iter2.deinit();
+
+    var iter = try TwoMergeIterator.init(
+        try StorageIteratorPtr.create(std.testing.allocator, .{ .sst_concat_iter = iter2 }),
+        try StorageIteratorPtr.create(std.testing.allocator, .{ .sst_concat_iter = iter1 }),
+    );
+    defer iter.deinit();
     while (!iter.isEmpty()) {
         std.debug.print("{s} {s}\n", .{ iter.key(), iter.value() });
         try iter.next();
