@@ -11,7 +11,7 @@ const BlockIteratorPtr = block.BlockIteratorPtr;
 const BlockBuilder = block.BlockBuilder;
 const hash = std.hash;
 
-pub const BlockCache = lru.LruCache(.locking, usize, BlockPtr);
+pub const BlockCache = lru.LruCache(.locking, struct { id: u64, blk_id: usize }, BlockPtr);
 pub const BlockCachePtr = smart_pointer.SmartPointer(BlockCache);
 
 const BloomFilterPtr = smart_pointer.SmartPointer(BloomFilter);
@@ -441,12 +441,15 @@ pub const SsTable = struct {
 
     pub fn readBlockCached(self: Self, block_idx: usize, allocator: std.mem.Allocator) !BlockPtr {
         if (self.block_cache) |bc| {
-            if (bc.get().get(block_idx)) |b| {
+            if (bc.get().get(.{
+                .id = self.id,
+                .blk_id = block_idx,
+            })) |b| {
                 return b.clone();
             } else {
                 var b = try self.readBlock(block_idx, allocator);
                 errdefer b.release();
-                try bc.get().insert(block_idx, b);
+                try bc.get().insert(.{ .id = self.id, .blk_id = block_idx }, b);
                 return b.clone();
             }
         }
