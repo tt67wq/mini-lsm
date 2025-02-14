@@ -32,13 +32,12 @@ pub fn init(allocator: Allocator, num_bits: u64) !Self {
     };
 }
 
-pub fn clone(self: Self, allocator: Allocator) !Self {
-    const bytes = try allocator.dupe(u8, self.bytes);
-    return .{
-        .allocator = allocator,
-        .bytes = bytes,
-        .len = self.len,
-    };
+pub fn clear(self: *Self) !void {
+    self.allocator.free(self.bytes);
+
+    const bytes = try self.allocator.alloc(u8, self.len);
+    @memset(bytes, 0);
+    self.bytes = bytes;
 }
 
 pub fn encode(self: Self, allocator: Allocator) ![]u8 {
