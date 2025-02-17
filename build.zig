@@ -19,6 +19,33 @@ pub fn build(b: *std.Build) void {
     // set a preferred release mode, allowing the user to decide how to optimize.
     const optimize = b.standardOptimizeOption(.{});
 
+    const storage_lib = b.addSharedLibrary(.{
+        .name = "storage",
+        .root_source_file = b.path("src/storage.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    storage_lib.linkLibC();
+    storage_lib.addIncludePath(LazyPath{ .cwd_relative = "./include" });
+    storage_lib.addCSourceFiles(.{
+        .files = &c_source_files,
+        .flags = &c_flags,
+    });
+    b.installArtifact(storage_lib);
+
+    const exe = b.addExecutable(.{
+        .name = "main",
+        .root_source_file = b.path("src/main.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    exe.linkLibrary(storage_lib);
+
+    if (b.option(bool, "enable-demo", "install demo app") orelse false) {
+        b.installArtifact(exe);
+    }
+
     // Creates a step for unit testing. This only builds the test executable
     // but does not run it.
     const storage_unit_tests = b.addTest(.{
