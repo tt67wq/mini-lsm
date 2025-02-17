@@ -34,7 +34,7 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(storage_lib);
 
     const exe = b.addExecutable(.{
-        .name = "main",
+        .name = "demo",
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
