@@ -951,118 +951,86 @@ pub const StorageInner = struct {
     }
 
     fn compactSimple(self: *Self, task: SimpleLeveledCompactionTask) !std.ArrayList(SsTablePtr) {
-        var upper_ssts = try std.ArrayList(SsTablePtr).initCapacity(
-            self.allocator,
-            task.upper_level_sst_ids.items.len,
-        );
-        var lower_ssts = try std.ArrayList(SsTablePtr).initCapacity(
-            self.allocator,
-            task.lower_level_sst_ids.items.len,
-        );
+        if (task.upper_level) |_| {
+            var upper_ssts = try std.ArrayList(SsTablePtr).initCapacity(
+                self.allocator,
+                task.upper_level_sst_ids.items.len,
+            );
+            var lower_ssts = try std.ArrayList(SsTablePtr).initCapacity(
+                self.allocator,
+                task.lower_level_sst_ids.items.len,
+            );
 
-        self.state_lock.lockShared();
-        for (task.upper_level_sst_ids.items) |sst_id| {
-            const sst = self.state.sstables.get(sst_id).?;
-            try upper_ssts.append(sst.clone());
+            self.state_lock.lockShared();
+            for (task.upper_level_sst_ids.items) |sst_id| {
+                const sst = self.state.sstables.get(sst_id).?;
+                try upper_ssts.append(sst.clone());
+            }
+            for (task.lower_level_sst_ids.items) |sst_id| {
+                const sst = self.state.sstables.get(sst_id).?;
+                try lower_ssts.append(sst.clone());
+            }
+            self.state_lock.unlockShared();
+
+            var upper_iter = try SstConcatIterator.initAndSeekToFirst(self.allocator, upper_ssts);
+            errdefer upper_iter.deinit();
+
+            var lower_iter = try SstConcatIterator.initAndSeekToFirst(self.allocator, lower_ssts);
+            errdefer lower_iter.deinit();
+
+            var iter = try TwoMergeIterator.init(
+                try StorageIteratorPtr.create(self.allocator, .{ .sst_concat_iter = upper_iter }),
+                try StorageIteratorPtr.create(self.allocator, .{ .sst_concat_iter = lower_iter }),
+            );
+            defer iter.deinit();
+            return self.compactGenerateSstFromIter(&iter, task.is_lower_level_bottom);
+        } else {
+            // compact l0_sstables to l1_sstables
+            var upper_iters = try std.ArrayList(StorageIteratorPtr).initCapacity(
+                self.allocator,
+                task.upper_level_sst_ids.items.len,
+            );
+            defer {
+                for (upper_iters.items) |iter| {
+                    var ii = iter;
+                    ii.release();
+                }
+                upper_iters.deinit();
+            }
+
+            self.state_lock.lockShared();
+            for (task.upper_level_sst_ids.items) |sst_id| {
+                const sst = self.state.sstables.get(sst_id).?;
+                const ss_iter = try SsTableIterator.initAndSeekToFirst(self.allocator, sst.clone());
+                try upper_iters.append(try StorageIteratorPtr.create(self.allocator, .{
+                    .ss_table_iter = ss_iter,
+                }));
+            }
+            self.state_lock.unlockShared();
+
+            var upper_iter = try MergeIterators.init(self.allocator, upper_iters);
+            errdefer upper_iter.deinit();
+
+            var lower_ssts = try std.ArrayList(SsTablePtr).initCapacity(
+                self.allocator,
+                task.lower_level_sst_ids.items.len,
+            );
+
+            self.state_lock.lockShared();
+            for (task.lower_level_sst_ids.items) |sst_id| {
+                const sst = self.state.sstables.get(sst_id).?;
+                try lower_ssts.append(sst.clone());
+            }
+            self.state_lock.unlockShared();
+            var lower_iter = try SstConcatIterator.initAndSeekToFirst(self.allocator, lower_ssts);
+            errdefer lower_iter.deinit();
+            var iter = try TwoMergeIterator.init(
+                try StorageIteratorPtr.create(self.allocator, .{ .merge_iterators = upper_iter }),
+                try StorageIteratorPtr.create(self.allocator, .{ .sst_concat_iter = lower_iter }),
+            );
+            defer iter.deinit();
+            return self.compactGenerateSstFromIter(&iter, task.is_lower_level_bottom);
         }
-        for (task.lower_level_sst_ids.items) |sst_id| {
-            const sst = self.state.sstables.get(sst_id).?;
-            try lower_ssts.append(sst.clone());
-        }
-        self.state_lock.unlockShared();
-
-        var upper_iter = try SstConcatIterator.initAndSeekToFirst(self.allocator, upper_ssts);
-        errdefer upper_iter.deinit();
-
-        var lower_iter = try SstConcatIterator.initAndSeekToFirst(self.allocator, lower_ssts);
-        errdefer lower_iter.deinit();
-
-        var iter = try TwoMergeIterator.init(
-            try StorageIteratorPtr.create(self.allocator, .{ .sst_concat_iter = upper_iter }),
-            try StorageIteratorPtr.create(self.allocator, .{ .sst_concat_iter = lower_iter }),
-        );
-        defer iter.deinit();
-        return self.compactGenerateSstFromIter(&iter, task.is_lower_level_bottom);
-        // if (task.upper_level) |_| {
-        //     var upper_ssts = try std.ArrayList(SsTablePtr).initCapacity(
-        //         self.allocator,
-        //         task.upper_level_sst_ids.items.len,
-        //     );
-        //     var lower_ssts = try std.ArrayList(SsTablePtr).initCapacity(
-        //         self.allocator,
-        //         task.lower_level_sst_ids.items.len,
-        //     );
-
-        //     self.state_lock.lockShared();
-        //     for (task.upper_level_sst_ids.items) |sst_id| {
-        //         const sst = self.state.sstables.get(sst_id).?;
-        //         try upper_ssts.append(sst.clone());
-        //     }
-        //     for (task.lower_level_sst_ids.items) |sst_id| {
-        //         const sst = self.state.sstables.get(sst_id).?;
-        //         try lower_ssts.append(sst.clone());
-        //     }
-        //     self.state_lock.unlockShared();
-
-        //     var upper_iter = try SstConcatIterator.initAndSeekToFirst(self.allocator, upper_ssts);
-        //     errdefer upper_iter.deinit();
-
-        //     var lower_iter = try SstConcatIterator.initAndSeekToFirst(self.allocator, lower_ssts);
-        //     errdefer lower_iter.deinit();
-
-        //     var iter = try TwoMergeIterator.init(
-        //         try StorageIteratorPtr.create(self.allocator, .{ .sst_concat_iter = upper_iter }),
-        //         try StorageIteratorPtr.create(self.allocator, .{ .sst_concat_iter = lower_iter }),
-        //     );
-        //     defer iter.deinit();
-        //     return self.compactGenerateSstFromIter(&iter, task.is_lower_level_bottom);
-        // } else {
-        //     // compact l0_sstables to l1_sstables
-        //     var upper_iters = try std.ArrayList(StorageIteratorPtr).initCapacity(
-        //         self.allocator,
-        //         task.upper_level_sst_ids.items.len,
-        //     );
-        //     defer {
-        //         for (upper_iters.items) |iter| {
-        //             var ii = iter;
-        //             ii.release();
-        //         }
-        //         upper_iters.deinit();
-        //     }
-
-        //     self.state_lock.lockShared();
-        //     for (task.upper_level_sst_ids.items) |sst_id| {
-        //         const sst = self.state.sstables.get(sst_id).?;
-        //         const ss_iter = try SsTableIterator.initAndSeekToFirst(self.allocator, sst.clone());
-        //         try upper_iters.append(try StorageIteratorPtr.create(self.allocator, .{
-        //             .ss_table_iter = ss_iter,
-        //         }));
-        //     }
-        //     self.state_lock.unlockShared();
-
-        //     var upper_iter = try MergeIterators.init(self.allocator, upper_iters);
-        //     errdefer upper_iter.deinit();
-
-        //     var lower_ssts = try std.ArrayList(SsTablePtr).initCapacity(
-        //         self.allocator,
-        //         task.lower_level_sst_ids.items.len,
-        //     );
-
-        //     self.state_lock.lockShared();
-        //     for (task.lower_level_sst_ids.items) |sst_id| {
-        //         const sst = self.state.sstables.get(sst_id).?;
-        //         try lower_ssts.append(sst.clone());
-        //     }
-        //     self.state_lock.unlockShared();
-        //     var lower_iter = try SstConcatIterator.initAndSeekToFirst(self.allocator, lower_ssts);
-        //     errdefer lower_iter.deinit();
-        //     var iter = try TwoMergeIterator.init(
-        //         try StorageIteratorPtr.create(self.allocator, .{ .merge_iterators = upper_iter }),
-        //         try StorageIteratorPtr.create(self.allocator, .{ .sst_concat_iter = lower_iter }),
-        //     );
-        //     defer iter.deinit();
-        //     return self.compactGenerateSstFromIter(&iter, task.is_lower_level_bottom);
-        // }
     }
 
     fn compactGenerateSstFromIter(self: *Self, iter: *TwoMergeIterator, compact_to_bottom_level: bool) !std.ArrayList(SsTablePtr) {
