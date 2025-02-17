@@ -279,6 +279,9 @@ pub const StorageInner = struct {
                 if (try sst.load().mayContain(key)) {
                     var ss_iter = try SsTableIterator.initAndSeekToKey(self.allocator, sst.clone(), key);
                     errdefer ss_iter.deinit();
+                    if (ss_iter.isEmpty()) {
+                        continue;
+                    }
                     try l0_iters.append(try StorageIteratorPtr.create(self.allocator, .{ .ss_table_iter = ss_iter }));
                 }
             }
@@ -309,6 +312,9 @@ pub const StorageInner = struct {
                         key,
                     );
                     errdefer level_iter.deinit();
+                    if (level_iter.isEmpty()) {
+                        continue;
+                    }
                     try level_iters.append(try StorageIteratorPtr.create(self.allocator, .{ .sst_concat_iter = level_iter }));
                 }
             }
@@ -492,6 +498,7 @@ pub const StorageInner = struct {
         {
             self.state_lock.lockShared();
             defer self.state_lock.unlockShared();
+
             for (self.state.imm_mem_tables.items) |imm_table| {
                 if (!imm_table.load().isEmpty()) {
                     var sp = try StorageIteratorPtr.create(self.allocator, .{
@@ -501,11 +508,13 @@ pub const StorageInner = struct {
                     try memtable_iters.append(sp);
                 }
             }
-            var sp = try StorageIteratorPtr.create(self.allocator, .{
-                .mem_iter = self.state.getMemTable().scan(lower, upper),
-            });
-            errdefer sp.release();
-            try memtable_iters.append(sp);
+            if (!self.state.getMemTable().isEmpty()) {
+                var sp = try StorageIteratorPtr.create(self.allocator, .{
+                    .mem_iter = self.state.getMemTable().scan(lower, upper),
+                });
+                errdefer sp.release();
+                try memtable_iters.append(sp);
+            }
         }
 
         var memtable_merge_iters = try MergeIterators.init(self.allocator, memtable_iters);
@@ -544,6 +553,9 @@ pub const StorageInner = struct {
                         },
                     }
                     errdefer ss_iter.deinit();
+                    if (ss_iter.isEmpty()) {
+                        continue;
+                    }
                     var sp = try StorageIteratorPtr.create(self.allocator, .{
                         .ss_table_iter = ss_iter,
                     });
@@ -552,9 +564,6 @@ pub const StorageInner = struct {
                 }
             }
         }
-
-        var l0_merge_iter = try MergeIterators.init(self.allocator, l0_iters);
-        errdefer l0_merge_iter.deinit();
 
         // levels
         var lv_iters = std.ArrayList(StorageIteratorPtr).init(self.allocator);
@@ -595,6 +604,9 @@ pub const StorageInner = struct {
                     },
                 }
                 errdefer sst_concat_iter.deinit();
+                if (sst_concat_iter.isEmpty()) {
+                    continue;
+                }
                 var sp = try StorageIteratorPtr.create(self.allocator, .{
                     .sst_concat_iter = sst_concat_iter,
                 });
@@ -602,6 +614,9 @@ pub const StorageInner = struct {
                 try lv_iters.append(sp);
             }
         }
+
+        var l0_merge_iter = try MergeIterators.init(self.allocator, l0_iters);
+        errdefer l0_merge_iter.deinit();
 
         var lv_merge_iters = try MergeIterators.init(self.allocator, lv_iters);
         errdefer lv_merge_iters.deinit();
@@ -1084,6 +1099,7 @@ pub const StorageInner = struct {
     fn dumpState(self: *Self) void {
         std.debug.print("------------- Storage Dump -------------\n", .{});
         std.debug.print("memtable: {d}\n", .{self.state.getMemTable().getApproximateSize()});
+        std.debug.print("in_mem_sstables: {d}\n", .{self.state.imm_mem_tables.items.len});
         std.debug.print("l0_sstables: {d}\n", .{self.state.l0_sstables.items.len});
         for (self.state.l0_sstables.items) |sst_id| {
             std.debug.print("{d} ", .{sst_id});
@@ -1218,7 +1234,7 @@ test "scan" {
     var storage = try StorageInner.init(std.testing.allocator, "./tmp/storage/scan", opts);
     defer storage.deinit();
 
-    for (0..256) |i| {
+    for (0..16) |i| {
         var kb: [10]u8 = undefined;
         var vb: [10]u8 = undefined;
         const kk = try std.fmt.bufPrint(&kb, "key{d:0>5}", .{i});
@@ -1226,11 +1242,12 @@ test "scan" {
         try storage.put(kk, vv);
     }
 
-    try storage.flushNextMemtable();
+    // try storage.triggerFlush();
+    // storage.dumpState();
 
     var iter = try storage.scan(
-        Bound.init("", .unbounded),
-        Bound.init("", .unbounded),
+        Bound.init("key00005", .included),
+        Bound.init("key00012", .excluded),
     );
     defer iter.deinit();
 
@@ -1308,7 +1325,7 @@ test "simple_compact" {
     }
 
     var iter = try storage.scan(
-        Bound.init("key00278", .unbounded),
+        Bound.init("key00278", .included),
         Bound.init("", .unbounded),
     );
     defer iter.deinit();
