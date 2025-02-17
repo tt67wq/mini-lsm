@@ -15,6 +15,7 @@ pub const StorageIterator = union(enum) {
     sst_concat_iter: SstConcatIterator,
     merge_iterators: MergeIterators,
     two_merge_iter: TwoMergeIterator,
+    no_op_iter: struct {},
 
     pub fn deinit(self: *StorageIterator) void {
         switch (self.*) {
@@ -28,6 +29,7 @@ pub const StorageIterator = union(enum) {
 
     pub fn isEmpty(self: StorageIterator) bool {
         switch (self) {
+            .no_op_iter => return true,
             inline else => |impl| return impl.isEmpty(),
         }
     }
@@ -39,23 +41,27 @@ pub const StorageIterator = union(enum) {
             .sst_concat_iter => try self.sst_concat_iter.next(),
             .merge_iterators => try self.merge_iterators.next(),
             .two_merge_iter => try self.two_merge_iter.next(),
+            inline else => {},
         }
     }
 
     pub fn key(self: StorageIterator) []const u8 {
         switch (self) {
+            .no_op_iter => unreachable,
             inline else => |impl| return impl.key(),
         }
     }
 
     pub fn value(self: StorageIterator) []const u8 {
         switch (self) {
+            .no_op_iter => unreachable,
             inline else => |impl| return impl.value(),
         }
     }
 
     pub fn numActiveIterators(self: StorageIterator) usize {
         switch (self) {
+            .no_op_iter => 0,
             inline else => |impl| return impl.numActiveIterators(),
         }
     }
@@ -275,6 +281,22 @@ pub const SstConcatIterator = struct {
                 .sstables = sstables,
             };
         }
+        const first_sst = sstables.items[0].get();
+        const last_sst = sstables.items[sstables.items.len - 1].get();
+
+        if (std.mem.lessThan(u8, k, first_sst.first_key)) {
+            return initAndSeekToFirst(allocator, sstables);
+        }
+
+        if (std.mem.lessThan(u8, last_sst.last_key, k)) {
+            return .{
+                .allocator = allocator,
+                .current = null,
+                .next_sst_idx = sstables.items.len,
+                .sstables = sstables,
+            };
+        }
+
         // binary search
         var index: usize = 0;
         {
