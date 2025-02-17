@@ -29,8 +29,8 @@ pub const StorageOptions = struct {
     block_size: usize,
     target_sst_size: usize,
     num_memtable_limit: usize,
-    enable_wal: bool,
-    compaction_options: compact.CompactionOptions,
+    enable_wal: bool = true,
+    compaction_options: compact.CompactionOptions = .{ .no_compaction = .{} },
 };
 
 pub const StorageState = struct {
@@ -263,13 +263,13 @@ pub const StorageInner = struct {
         }
 
         // search in l0_sstables
-        var iters = std.ArrayList(StorageIteratorPtr).init(self.allocator);
+        var l0_iters = std.ArrayList(StorageIteratorPtr).init(self.allocator);
         defer {
-            for (iters.items) |iter| {
+            for (l0_iters.items) |iter| {
                 var ii = iter;
                 ii.release();
             }
-            iters.deinit();
+            l0_iters.deinit();
         }
         {
             self.state_lock.lockShared();
@@ -279,18 +279,82 @@ pub const StorageInner = struct {
                 if (try sst.load().mayContain(key)) {
                     var ss_iter = try SsTableIterator.initAndSeekToKey(self.allocator, sst.clone(), key);
                     errdefer ss_iter.deinit();
-                    try iters.append(try StorageIteratorPtr.create(self.allocator, .{ .ss_table_iter = ss_iter }));
+                    try l0_iters.append(try StorageIteratorPtr.create(self.allocator, .{ .ss_table_iter = ss_iter }));
                 }
             }
         }
-        var l0_iters = try MergeIterators.init(self.allocator, iters);
-        defer l0_iters.deinit();
 
-        if (std.mem.eql(u8, l0_iters.key(), key) and l0_iters.value().len > 0) {
-            value.* = l0_iters.value();
+        // search in levels
+        var level_iters: std.ArrayList(StorageIteratorPtr) = undefined;
+        {
+            self.state_lock.lockShared();
+            defer self.state_lock.unlockShared();
+            level_iters = try std.ArrayList(StorageIteratorPtr).initCapacity(
+                self.allocator,
+                self.state.levels.items.len,
+            );
+            for (self.state.levels.items) |level| {
+                var level_ssts = try std.ArrayList(SsTablePtr).initCapacity(self.allocator, level.items.len);
+                errdefer level_ssts.deinit();
+                for (level.items) |sst_id| {
+                    const sst = self.state.sstables.get(sst_id).?;
+                    if (try mayWithinTable(key, sst)) {
+                        try level_ssts.append(sst.clone());
+                    }
+                }
+                if (level_ssts.items.len > 0) {
+                    var level_iter = try SstConcatIterator.initAndSeekToKey(
+                        self.allocator,
+                        level_ssts,
+                        key,
+                    );
+                    errdefer level_iter.deinit();
+                    try level_iters.append(try StorageIteratorPtr.create(self.allocator, .{ .sst_concat_iter = level_iter }));
+                }
+            }
+        }
+        defer {
+            for (level_iters.items) |iter| {
+                var ii = iter;
+                ii.release();
+            }
+            level_iters.deinit();
+        }
+        var l0_merge_iter = try MergeIterators.init(self.allocator, l0_iters);
+        errdefer l0_merge_iter.deinit();
+
+        var levels_merge_iter = try MergeIterators.init(self.allocator, level_iters);
+        errdefer levels_merge_iter.deinit();
+
+        var iter = try TwoMergeIterator.init(
+            try StorageIteratorPtr.create(self.allocator, .{ .merge_iterators = l0_merge_iter }),
+            try StorageIteratorPtr.create(self.allocator, .{ .merge_iterators = levels_merge_iter }),
+        );
+        defer iter.deinit();
+
+        if (iter.isEmpty()) {
+            return false;
+        }
+
+        if (std.mem.eql(u8, iter.key(), key) and iter.value().len > 0) {
+            value.* = iter.value();
             return true;
         }
 
+        return false;
+    }
+
+    fn mayWithinTable(key: []const u8, table: SsTablePtr) !bool {
+        const fk = table.load().firstKey();
+        const lk = table.load().lastKey();
+
+        if (std.mem.lessThan(u8, key, fk)) {
+            return false;
+        }
+        if (std.mem.lessThan(u8, lk, key)) {
+            return false;
+        }
+        if (try table.load().mayContain(key)) return true;
         return false;
     }
 
@@ -1023,27 +1087,43 @@ test "put/delete/get" {
         .target_sst_size = 256,
         .num_memtable_limit = 10,
         .enable_wal = true,
+        .compaction_options = .{
+            .simple = .{
+                .size_ration_percent = 50,
+                .level0_file_num_compaction_trigger = 2,
+                .max_levels = 3,
+            },
+        },
     };
     var storage = try StorageInner.init(std.testing.allocator, "./tmp/storage/put", opts);
     defer storage.deinit();
 
-    try storage.put("key1", "value1");
-    try storage.put("key2", "value2");
-    try storage.put("key3", "value3");
-    try storage.delete("key3");
+    for (0..128) |i| {
+        var kb: [10]u8 = undefined;
+        var vb: [10]u8 = undefined;
+        const kk = std.fmt.bufPrint(&kb, "key{d:0>5}", .{i}) catch unreachable;
+        const vv = std.fmt.bufPrint(&vb, "val{d:0>5}", .{i}) catch unreachable;
+        std.debug.print("put {s} {s}\n", .{ kk, vv });
+        try storage.put(kk, vv);
+        try storage.triggerFlush();
+        try storage.triggerCompaction();
+    }
+
+    try storage.delete("key00003");
+    try storage.triggerFlush();
+    try storage.triggerCompaction();
 
     var value: []const u8 = undefined;
-    if (try storage.get("key1", &value)) {
-        std.debug.print("key1: {s}\n", .{value});
-        try std.testing.expectEqualStrings("value1", value);
+    if (try storage.get("key00001", &value)) {
+        std.debug.print("key00001: {s}\n", .{value});
+        try std.testing.expectEqualStrings("val00001", value);
     }
 
-    if (try storage.get("key2", &value)) {
-        std.debug.print("key2: {s}\n", .{value});
-        try std.testing.expectEqualStrings("value2", value);
+    if (try storage.get("key00003", &value)) {
+        unreachable;
     }
 
-    if (try storage.get("key3", &value)) {
+    if (try storage.get("not-exist", &value)) {
         unreachable;
     }
 }
