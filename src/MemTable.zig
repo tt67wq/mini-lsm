@@ -16,9 +16,7 @@ pub const MemTableIterator = struct {
     iter: Map.Iterator,
 
     pub fn init(m: Map.Iterator) MemTableIterator {
-        return MemTableIterator{
-            .iter = m,
-        };
+        return MemTableIterator{ .iter = m };
     }
 
     pub fn isEmpty(self: MemTableIterator) bool {
@@ -268,27 +266,22 @@ test "scan" {
     defer std.fs.cwd().deleteTree("./tmp/iter.mm") catch unreachable;
     var mm = Self.init(0, allocator, "./tmp/iter.mm");
     defer mm.deinit();
-    try mm.put("a", "a");
-    try mm.put("b", "b");
-    try mm.put("c", "c");
-    try mm.put("d", "d");
-    try mm.put("e", "e");
 
-    var it = mm.scan(Bound.init("a", .included), Bound.init("d", .excluded));
+    for (0..512) |i| {
+        var kb: [10]u8 = undefined;
+        var vb: [10]u8 = undefined;
+        const kk = try std.fmt.bufPrint(&kb, "key{d:0>5}", .{i});
+        const vv = try std.fmt.bufPrint(&vb, "val{d:0>5}", .{i});
+        try mm.put(kk, vv);
+    }
+
+    var it = mm.scan(Bound.init("key00278", .included), Bound.init("key00299", .excluded));
     while (!it.isEmpty()) {
         std.debug.print("key: {s}, val: {s}\n", .{ it.key(), it.value() });
         it.next();
     }
-    std.debug.print("======================\n", .{});
 
-    it = mm.scan(Bound.init("c", .excluded), Bound.init("", .unbounded));
-    while (!it.isEmpty()) {
-        std.debug.print("key: {s}, val: {s}\n", .{ it.key(), it.value() });
-        it.next();
-    }
-    std.debug.print("======================\n", .{});
-
-    it = mm.scan(Bound.init("", .unbounded), Bound.init("", .unbounded));
+    it = mm.scan(Bound.init("key00555", .included), Bound.init("", .unbounded));
     while (!it.isEmpty()) {
         std.debug.print("key: {s}, val: {s}\n", .{ it.key(), it.value() });
         it.next();

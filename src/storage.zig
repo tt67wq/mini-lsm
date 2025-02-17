@@ -456,7 +456,7 @@ pub const StorageInner = struct {
                 }
             },
             .included => {
-                // user_begin.key < sst_begin
+                // user_end.key < sst_begin
                 if (std.mem.lessThan(u8, user_end.data, sst_begin)) {
                     return false;
                 }
@@ -502,6 +502,10 @@ pub const StorageInner = struct {
             for (self.state.imm_mem_tables.items) |imm_table| {
                 if (!imm_table.load().isEmpty()) {
                     var imm_it = imm_table.load().scan(lower, upper);
+                    while (!imm_it.isEmpty()) {
+                        std.debug.print("{d}: {s}\n", .{ imm_table.load().id, imm_it.key() });
+                        imm_it.next();
+                    }
                     if (imm_it.isEmpty()) continue;
                     var sp = try StorageIteratorPtr.create(
                         self.allocator,

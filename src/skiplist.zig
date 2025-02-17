@@ -309,10 +309,68 @@ pub fn SkipList(comptime Tk: type, comptime Tv: type) type {
             }
         }
 
+        fn firstKey(self: Self) Tk {
+            if (self.head) |_| {
+                var current = self.head.?;
+                while (current.down) |_| {
+                    current = current.down.?;
+                }
+                return current.key;
+            }
+            unreachable;
+        }
+
+        fn lastKey(self: Self) Tk {
+            if (self.head) |_| {
+                var current = self.head.?;
+                while (current.down) |_| {
+                    current = current.down.?;
+                }
+                while (current.next) |_| {
+                    current = current.next.?;
+                }
+                return current.key;
+            }
+            unreachable;
+        }
+
+        fn rangeOverlap(self: Self, lower_bound: Bound, upper_bound: Bound) bool {
+            const fk = self.firstKey();
+            const lk = self.lastKey();
+            switch (upper_bound.bound_t) {
+                .excluded => {
+                    // upper <= first
+                    // !upper > first
+                    if (!self.lt(fk, upper_bound.data)) return false;
+                },
+                .included => {
+                    // upper < first
+                    if (self.lt(upper_bound.data, fk)) return false;
+                },
+                .unbounded => {},
+            }
+            switch (lower_bound.bound_t) {
+                .excluded => {
+                    // lower >= last
+                    // !lower < last
+                    if (!self.lt(lower_bound.data, lk)) return false;
+                },
+                .included => {
+                    // lower > last
+                    if (self.lt(lk, lower_bound.data)) return false;
+                },
+                .unbounded => {},
+            }
+            return true;
+        }
+
         // Returns an iterator over the range `(lower_bound, upper_bound)`.
         pub fn scan(self: Self, lower_bound: Bound, upper_bound: Bound) Iterator {
-            if (!lower_bound.isUnbounded() and !upper_bound.isUnbounded() and self.lt(upper_bound.data, lower_bound.data)) @panic("invalid range");
             if (self.isEmpty()) {
+                return Iterator.init(null, upper_bound, self.lt, self.eq);
+            }
+
+            if (!self.rangeOverlap(lower_bound, upper_bound)) {
                 return Iterator.init(null, upper_bound, self.lt, self.eq);
             }
 
@@ -324,9 +382,7 @@ pub fn SkipList(comptime Tk: type, comptime Tv: type) type {
             } else {
                 node = self.descend(lower_bound.data, levels);
             }
-            if (self.eq(node.key, lower_bound.data) and lower_bound.bound_t == .excluded) {
-                return Iterator.init(node.next, upper_bound, self.lt, self.eq);
-            }
+
             return Iterator.init(node, upper_bound, self.lt, self.eq);
         }
 
@@ -384,6 +440,21 @@ test "u8" {
     }
 }
 
+test "first/last key" {
+    const allocator = std.testing.allocator;
+    var rng = std.rand.DefaultPrng.init(0);
+    const lt = SkipList(u32, u32);
+    var list = lt.init(allocator, rng.random(), testComp, testEqual);
+    defer list.deinit();
+    for (0..8) |i| {
+        try list.insert(@intCast(i), @intCast(i * 2));
+    }
+
+    const fk = list.firstKey();
+    const lk = list.lastKey();
+    std.debug.print("first key: {d}, last key: {d}\n", .{ fk, lk });
+}
+
 test "bytes" {
     const allocator = std.testing.allocator;
     var rng = std.rand.DefaultPrng.init(0);
@@ -396,40 +467,37 @@ test "bytes" {
     );
     defer list.deinit();
 
-    for (0..120) |i| {
-        const key = std.fmt.allocPrint(allocator, "key{d:0>5}", .{i}) catch unreachable;
-        const val = std.fmt.allocPrint(allocator, "val{d:0>5}", .{i}) catch unreachable;
-        std.debug.print("insert {s} => {s}\n", .{ key, val });
-        try list.insert(key, val);
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    for (0..16) |i| {
+        var kb: [10]u8 = undefined;
+        var vb: [10]u8 = undefined;
+        const kk = try std.fmt.bufPrint(&kb, "key{d:0>5}", .{i});
+        const vv = try std.fmt.bufPrint(&vb, "val{d:0>5}", .{i});
+
+        std.debug.print("insert {s} => {s}\n", .{ kk, vv });
+        try list.insert(
+            try arena.allocator().dupe(u8, kk),
+            try arena.allocator().dupe(u8, vv),
+        );
     }
+
+    const fk = list.firstKey();
+    const lk = list.lastKey();
+    std.debug.print("first key: {s}, last key: {s}\n", .{ fk, lk });
 
     // list.display();
     // std.debug.print("--------------------\n", .{});
 
     var iter = list.scan(
-        lt.Bound.init("key", .included),
-        lt.Bound.init("key00121", .excluded),
+        lt.Bound.init("key00008", .included),
+        lt.Bound.init("key00013", .excluded),
     );
-    var to_free_key: []const u8 = undefined;
-    var to_free_val: []const u8 = undefined;
-    var first = true;
     while (!iter.isEmpty()) {
         std.debug.print("k={s} v={s}\n", .{ iter.key(), iter.value() });
-        if (!first) {
-            allocator.free(to_free_key);
-            allocator.free(to_free_val);
-        }
-        to_free_key = iter.key();
-        to_free_val = iter.value();
-        first = false;
         iter.next();
     }
-    if (!first) {
-        allocator.free(to_free_key);
-        allocator.free(to_free_val);
-    }
-
-    std.debug.print("--------------------\n", .{});
 }
 
 test "iterator" {
