@@ -169,11 +169,10 @@ pub const LsmIterator = struct {
         switch (self.end_bound.bound_t) {
             .unbounded => {},
             .included => {
-                self.is_empty = std.mem.lessThan(u8, self.key(), self.end_bound.data) or
-                    std.mem.eql(u8, self.key(), self.end_bound.data);
+                self.is_empty = std.mem.lessThan(u8, self.end_bound.data, self.key());
             },
             .excluded => {
-                self.is_empty = std.mem.lessThan(u8, self.key(), self.end_bound.data);
+                self.is_empty = !std.mem.lessThan(u8, self.key(), self.end_bound.data);
             },
         }
         return;
