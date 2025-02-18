@@ -176,8 +176,8 @@ fn descend(self: Self, key: []const u8, levels: []*Node) *Node {
 
 pub fn get(self: Self, key: []const u8, value: *[]const u8) !bool {
     const head = self.head orelse return false;
-    if (self.eq(key, head.key)) {
-        if (head.value) |v| value.* = v;
+    if (std.mem.eql(u8, key, head.key)) {
+        value.* = head.value;
         return true;
     }
     if (std.mem.lessThan(u8, key, head.key)) return false;
@@ -185,8 +185,8 @@ pub fn get(self: Self, key: []const u8, value: *[]const u8) !bool {
     const levels = try self.allocator.alloc(*Node, self.levels);
     defer self.allocator.free(levels);
     const node = self.descend(key, levels);
-    if (self.eq(key, node.key)) {
-        if (node.value) |v| value.* = v;
+    if (std.mem.eql(u8, key, node.key)) {
+        value.* = head.value;
         return true;
     }
     return false;

@@ -8,14 +8,13 @@ const RwLock = std.Thread.RwLock;
 const SsTableBuilder = ss_table.SsTableBuilder;
 
 const Self = @This();
-const Map = skiplist.SkipList([]const u8, []const u8);
 
 pub const MemTablePtr = smart_pointer.SmartPointer(Self);
-pub const Bound = Map.Bound;
+pub const Bound = skiplist.Bound;
 pub const MemTableIterator = struct {
-    iter: Map.Iterator,
+    iter: skiplist.Iterator,
 
-    pub fn init(m: Map.Iterator) MemTableIterator {
+    pub fn init(m: skiplist.Iterator) MemTableIterator {
         return MemTableIterator{ .iter = m };
     }
 
@@ -40,9 +39,7 @@ pub const MemTableIterator = struct {
     }
 };
 
-const max_key = "Ω";
-
-map: Map,
+skiplist: skiplist,
 lock: RwLock,
 wal: ?Wal,
 id: usize,
@@ -50,31 +47,12 @@ allocator: std.mem.Allocator,
 arena: std.heap.ArenaAllocator,
 approximate_size: atomic.Value(usize) = atomic.Value(usize).init(0),
 
-fn compFunc(a: []const u8, b: []const u8) bool {
-    if (std.mem.eql(u8, b, max_key)) {
-        return true;
-    }
-    return std.mem.lessThan(u8, a, b);
-}
-
-fn equalFunc(a: []const u8, b: []const u8) bool {
-    if (std.mem.eql(u8, b, max_key)) {
-        return false;
-    }
-    return std.mem.eql(u8, a, b);
-}
-
 pub fn init(id: usize, allocator: std.mem.Allocator, path: ?[]const u8) Self {
     var rng = std.rand.DefaultPrng.init(0);
     const arena = std.heap.ArenaAllocator.init(allocator);
 
     return Self{
-        .map = Map.init(
-            allocator,
-            rng.random(),
-            compFunc,
-            equalFunc,
-        ),
+        .skiplist = skiplist.init(allocator, rng.random()),
         .wal = walInit(path),
         .id = id,
         .allocator = allocator,
@@ -94,7 +72,7 @@ fn walInit(path: ?[]const u8) ?Wal {
 }
 
 pub fn deinit(self: *Self) void {
-    self.map.deinit();
+    self.skiplist.deinit();
     if (self.wal) |_| {
         self.wal.?.deinit();
     }
@@ -148,12 +126,12 @@ pub fn recoverFromWal(self: *Self) !void {
 }
 
 fn putToList(self: *Self, key: []const u8, value: []const u8) !void {
-    const kk = try self.arena.allocator().dupe(u8, key);
-    const vv = try self.arena.allocator().dupe(u8, value);
+    // const kk = try self.arena.allocator().dupe(u8, key);
+    // const vv = try self.arena.allocator().dupe(u8, value);
     {
         self.lock.lock();
         defer self.lock.unlock();
-        try self.map.insert(kk, vv);
+        try self.skiplist.insert(key, value);
     }
 
     _ = self.approximate_size.fetchAdd(@intCast(key.len + value.len), .monotonic);
@@ -163,7 +141,8 @@ fn putToWal(self: *Self, key: []const u8, value: []const u8) !void {
     // [key-size: 4bytes][key][value-size: 4bytes][value]
 
     if (self.wal) |w| {
-        var buf = std.ArrayList(u8).init(self.arena.allocator());
+        var buf = std.ArrayList(u8).init(self.allocator);
+        defer buf.deinit();
 
         var bw = buf.writer();
         try bw.writeInt(u32, @intCast(key.len), .big);
@@ -183,7 +162,7 @@ pub fn get(self: *Self, key: []const u8, val: *[]const u8) !bool {
     self.lock.lockShared();
     defer self.lock.unlockShared();
     var vv: []const u8 = undefined;
-    if (try self.map.get(key, &vv)) {
+    if (try self.skiplist.get(key, &vv)) {
         val.* = vv;
         return true;
     }
@@ -197,7 +176,7 @@ pub fn syncWal(self: Self) !void {
 }
 
 pub fn isEmpty(self: Self) bool {
-    return self.map.isEmpty();
+    return self.skiplist.isEmpty();
 }
 
 pub fn getApproximateSize(self: Self) usize {
@@ -206,11 +185,11 @@ pub fn getApproximateSize(self: Self) usize {
 
 // get a iterator over range (lower_bound, upper_bound)
 pub fn scan(self: *Self, lower_bound: Bound, upper_bound: Bound) MemTableIterator {
-    return MemTableIterator.init(self.map.scan(lower_bound, upper_bound));
+    return MemTableIterator.init(self.skiplist.scan(lower_bound, upper_bound));
 }
 
 pub fn flush(self: Self, builder: *SsTableBuilder) !void {
-    var it = self.map.scan(Bound.init("", .unbounded), Bound.init("", .unbounded));
+    var it = self.skiplist.scan(Bound.init("", .unbounded), Bound.init("", .unbounded));
     while (!it.isEmpty()) {
         try builder.add(it.key(), it.value());
         it.next();
