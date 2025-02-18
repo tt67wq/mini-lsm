@@ -186,6 +186,16 @@ pub const StorageInner = struct {
         self.terminate.set();
         self.wg.wait();
 
+        // sync wal
+        if (self.options.enable_wal) {
+            try self.state.getMemTable().syncWal();
+        }
+
+        // TODO: flush memtable
+
+        // sync dir
+        try self.syncDir();
+
         // free state
         self.state.deinit();
 
@@ -193,9 +203,18 @@ pub const StorageInner = struct {
         self.block_cache.deinit();
     }
 
+    pub fn sync(self: *Self) !void {
+        self.state_lock.lockShared();
+        defer self.state_lock.unlockShared();
+        if (self.options.enable_wal) {
+            try self.state.getMemTable().syncWal();
+        }
+        try self.syncDir();
+    }
+
     pub fn syncDir(self: Self) !void {
         const DirSyncer = struct {
-            fn sync(dir: std.fs.Dir) !void {
+            fn __sync(dir: std.fs.Dir) !void {
                 var it = dir.iterate();
                 while (try it.next()) |en| {
                     switch (en.kind) {
@@ -205,7 +224,7 @@ pub const StorageInner = struct {
                         .directory => {
                             var sd = try dir.openDir(en.name, .{});
                             defer sd.close();
-                            try sync(sd);
+                            try __sync(sd);
                         },
                         inline else => {},
                     }
@@ -221,7 +240,7 @@ pub const StorageInner = struct {
         var dir = try std.fs.cwd().openDir(self.path, .{});
         defer dir.close();
 
-        try DirSyncer.sync(dir);
+        try DirSyncer.__sync(dir);
     }
 
     fn getNextSstId(self: *Self) usize {
@@ -391,11 +410,7 @@ pub const StorageInner = struct {
     }
 
     pub fn delete(self: *Self, key: []const u8) !void {
-        return self.writeBatch(&[_]WriteBatchRecord{
-            .{
-                .delete = key,
-            },
-        });
+        return self.writeBatch(&[_]WriteBatchRecord{.{ .delete = key }});
     }
 
     fn tryFreeze(self: *Self, estimate_size: usize) !void {
@@ -414,7 +429,7 @@ pub const StorageInner = struct {
         self.state_lock.unlockShared();
     }
 
-    fn forceFreezeMemtable(self: *Self) !void {
+    pub fn forceFreezeMemtable(self: *Self) !void {
         const next_sst_id = self.getNextSstId();
         var new_mm: MemTable = undefined;
         {
