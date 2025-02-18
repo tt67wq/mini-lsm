@@ -1,5 +1,7 @@
 const std = @import("std");
 const storage = @import("storage.zig");
+const Bound = @import("MemTable.zig").Bound;
+const LsmIterator = @import("iterators.zig").LsmIterator;
 
 const Self = @This();
 
@@ -10,6 +12,9 @@ pub fn init(allocator: std.mem.Allocator, path: []const u8, options: storage.Sto
     var inner = try storage.StorageInner.init(allocator, path, options);
     errdefer inner.deinit();
 
+    try inner.syncDir();
+
+    inner.spawnFlushThread();
     inner.spawnCompactionThread();
 
     return .{
@@ -18,9 +23,49 @@ pub fn init(allocator: std.mem.Allocator, path: []const u8, options: storage.Sto
     };
 }
 
-pub fn deinit(self: *Self) void {
-    self.inner.syncDir() catch |err| {
-        std.log.err("failed to sync dir: {s}", .{@errorName(err)});
-    };
+pub fn deinit(self: *Self) !void {
+    try self.inner.syncDir();
     self.inner.deinit();
+}
+
+pub fn get(self: *Self, key: []const u8, val: *[]const u8) !bool {
+    return self.inner.get(key, val);
+}
+
+pub fn put(self: *Self, key: []const u8, val: []const u8) !void {
+    return self.inner.put(key, val);
+}
+
+pub fn del(self: *Self, key: []const u8) !void {
+    return self.inner.delete(key);
+}
+
+pub fn writeBatch(self: *Self, batch: []const storage.WriteBatchRecord) !void {
+    return self.inner.writeBatch(batch);
+}
+
+pub fn sync(self: *Self) !void {
+    return self.inner.sync();
+}
+
+pub fn scan(self: *Self, lower: Bound, upper: Bound) !LsmIterator {
+    return self.inner.scan(lower, upper);
+}
+
+pub fn forceFlush(self: *Self) !void {
+    var is_empty: bool = false;
+    {
+        self.inner.state_lock.lockShared();
+        defer self.inner.state_lock.unlockShared();
+        is_empty = self.inner.state.getMemTable().isEmpty();
+    }
+
+    if (!is_empty) {
+        try self.inner.forceFreezeMemtable();
+        try self.inner.flushNextMemtable();
+    }
+}
+
+pub fn forceFullCompaction(self: *Self) !void {
+    try self.inner.forceFullCompaction();
 }
