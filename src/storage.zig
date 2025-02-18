@@ -182,6 +182,12 @@ pub const StorageInner = struct {
     }
 
     pub fn deinit(self: *Self) void {
+        self.close() catch |err| {
+            std.log.err("close storage error: {any}\n", .{err});
+        };
+    }
+
+    pub fn close(self: *Self) !void {
         // stop compaction thread
         self.terminate.set();
         self.wg.wait();
