@@ -4,17 +4,20 @@ const storage = @import("storage.zig");
 pub const CompactionTask = union(enum) {
     force_full_compaction: ForceFullCompaction,
     simple: SimpleLeveledCompactionTask,
+    // tiered: TieredCompactionTask,
 
     pub fn deinit(self: *CompactionTask) void {
         switch (self.*) {
             .force_full_compaction => self.force_full_compaction.deinit(),
             .simple => self.simple.deinit(),
+            // .tiered => self.tiered.deinit(),
         }
     }
     pub fn compactToBottomLevel(self: CompactionTask) bool {
         return switch (self) {
             .force_full_compaction => true,
-            inline else => false,
+            .simple => self.simple.is_lower_level_bottom,
+            // .tiered => self.tiered.bottom_tier_included,
         };
     }
 };
@@ -22,6 +25,7 @@ pub const CompactionTask = union(enum) {
 pub const CompactionOptions = union(enum) {
     no_compaction: struct {},
     simple: SimpleLeveledCompactionOptions,
+    // tiered: TieredCompactionOptions,
 
     pub fn is_no_compaction(self: CompactionOptions) bool {
         return switch (self) {
@@ -34,17 +38,18 @@ pub const CompactionOptions = union(enum) {
 pub const CompactionController = union(enum) {
     no_compaction: struct {},
     simple: SimpleLeveledCompactionController,
+    // tiered: TieredCompactionController,
 
     pub fn generateCompactionTask(self: CompactionController, state: *storage.StorageState) !?CompactionTask {
         switch (self) {
             .simple => |controller| {
-                if (try controller.generateCompactionTask(state)) |task| {
-                    return .{
-                        .simple = task,
-                    };
-                }
+                if (try controller.generateCompactionTask(state)) |task| return .{ .simple = task };
                 return null;
             },
+            // .tiered => |controller| {
+            //     if (try controller.generateCompactionTask(state)) |task| return .{ .tiered = task };
+            //     return null;
+            // },
             inline else => unreachable,
         }
     }
@@ -110,29 +115,30 @@ pub const SimpleLeveledCompactionController = struct {
         };
     }
 
-    pub fn generateCompactionTask(self: SimpleLeveledCompactionController, state: *storage.StorageState) !?SimpleLeveledCompactionTask {
-        if (self.options.max_levels == 1) {
-            return null;
+    fn generateCompactionTask(self: SimpleLeveledCompactionController, state: *storage.StorageState) !?SimpleLeveledCompactionTask {
+        if (self.options.max_levels == 1) return null;
+
+        // check level0_file_num_compaction_trigger for compaction of L0 to L1
+        if (state.l0_sstables.get().size() >= self.options.level0_file_num_compaction_trigger) {
+            std.debug.print(
+                "compaction of L0 to L1 because L0 has {d} SSTS >= {d}\n",
+                .{ state.l0_sstables.get().size(), self.options.level0_file_num_compaction_trigger },
+            );
+            return .{
+                .upper_level = null,
+                .upper_level_sst_ids = try state.l0_sstables.get().dump(),
+                .lower_level = 1,
+                .lower_level_sst_ids = try state.levels.items[0].get().dump(),
+                .is_lower_level_bottom = false,
+            };
         }
 
         var level_sizes = std.ArrayList(usize).init(state.allocator);
         defer level_sizes.deinit();
 
-        try level_sizes.append(state.l0_sstables.items.len);
+        try level_sizes.append(state.l0_sstables.get().size());
         for (state.levels.items) |level| {
-            try level_sizes.append(level.items.len);
-        }
-
-        // check level0_file_num_compaction_trigger for compaction of L0 to L1
-        if (state.l0_sstables.items.len >= self.options.level0_file_num_compaction_trigger) {
-            std.debug.print("compaction of L0 to L1 because L0 has {d} SSTS >= {d}\n", .{ state.l0_sstables.items.len, self.options.level0_file_num_compaction_trigger });
-            return .{
-                .upper_level = null,
-                .upper_level_sst_ids = try state.l0_sstables.clone(),
-                .lower_level = 1,
-                .lower_level_sst_ids = try state.levels.items[0].clone(),
-                .is_lower_level_bottom = false,
-            };
+            try level_sizes.append(level.get().size());
         }
 
         // check size_ration_percent for compaction of Ln to Ln+1
@@ -146,9 +152,9 @@ pub const SimpleLeveledCompactionController = struct {
                 std.debug.print("compaction of L{d} to L{d} because L{d} size ratio {d} < {d}\n", .{ level, lower_level, level, size_ration, self.options.size_ration_percent });
                 return .{
                     .upper_level = level,
-                    .upper_level_sst_ids = try state.levels.items[level - 1].clone(),
+                    .upper_level_sst_ids = try state.levels.items[level - 1].get().dump(),
                     .lower_level = lower_level,
-                    .lower_level_sst_ids = try state.levels.items[lower_level - 1].clone(),
+                    .lower_level_sst_ids = try state.levels.items[lower_level - 1].get().dump(),
                     .is_lower_level_bottom = lower_level == self.options.max_levels,
                 };
             }
@@ -157,7 +163,7 @@ pub const SimpleLeveledCompactionController = struct {
         return null;
     }
 
-    pub fn applyCompactionResult(
+    fn applyCompactionResult(
         _: SimpleLeveledCompactionController,
         state: *storage.StorageState,
         task: SimpleLeveledCompactionTask,
@@ -168,15 +174,15 @@ pub const SimpleLeveledCompactionController = struct {
 
         if (task.upper_level) |upper_level| {
             std.debug.assert(sliceEquals(
-                task.upper_level_sst_ids.items,
-                state.levels.items[upper_level - 1].items,
+                task.upper_level_sst_ids,
+                state.levels.items[upper_level - 1].get().ssts,
             ));
             try files_to_remove.appendSlice(task.upper_level_sst_ids.items);
-            state.levels.items[upper_level - 1].clearAndFree();
+            state.levels.items[upper_level - 1].get().clear();
         } else {
             try files_to_remove.appendSlice(task.upper_level_sst_ids.items);
             var new_l0_sstables = std.ArrayList(usize).init(state.allocator);
-            errdefer new_l0_sstables.deinit();
+            defer new_l0_sstables.deinit();
 
             {
                 var l0_sst_compacted = std.AutoHashMap(usize, struct {}).init(state.allocator);
@@ -185,34 +191,37 @@ pub const SimpleLeveledCompactionController = struct {
                     try l0_sst_compacted.put(sst_id, .{});
                 }
 
-                for (state.l0_sstables.items) |sst_id| {
+                var l0 = state.l0_sstables.get();
+                for (l0.ssts.items) |sst_id| {
                     if (!l0_sst_compacted.remove(sst_id)) {
                         try new_l0_sstables.append(sst_id);
                     }
                 }
                 std.debug.assert(l0_sst_compacted.count() == 0);
+
+                l0.clear();
+                try l0.ssts.appendSlice(new_l0_sstables.items);
             }
-            state.l0_sstables.deinit();
-            state.l0_sstables = new_l0_sstables;
         }
         std.debug.assert(sliceEquals(
-            task.lower_level_sst_ids.items,
-            state.levels.items[task.lower_level - 1].items,
+            task.lower_level_sst_ids,
+            state.levels.items[task.lower_level - 1].get().ssts,
         ));
         try files_to_remove.appendSlice(task.lower_level_sst_ids.items);
-        state.levels.items[task.lower_level - 1].clearAndFree();
-        try state.levels.items[task.lower_level - 1].appendSlice(output);
+        var lower = state.levels.items[task.lower_level - 1].get();
+        lower.clear();
+        try lower.ssts.appendSlice(output);
 
         return files_to_remove;
     }
 };
 
-fn sliceEquals(a: []const usize, b: []const usize) bool {
-    if (a.len != b.len) {
+fn sliceEquals(a: std.ArrayList(usize), b: std.ArrayList(usize)) bool {
+    if (a.items.len != b.items.len) {
         return false;
     }
-    for (a, 0..) |item, i| {
-        if (item != b[i]) {
+    for (a.items, 0..) |item, i| {
+        if (item != b.items[i]) {
             return false;
         }
     }
@@ -240,11 +249,12 @@ pub const TieredCompactionTask = struct {
 
 pub const TieredCompactionController = struct {
     options: TieredCompactionOptions,
+
     pub fn init(options: TieredCompactionOptions) TieredCompactionController {
         return .{ .options = options };
     }
 
-    pub fn generateCompactionTask(self: TieredCompactionController, state: *storage.StorageState) !?TieredCompactionTask {
+    fn generateCompactionTask(self: TieredCompactionController, state: *storage.StorageState) !?TieredCompactionTask {
         std.debug.assert(state.l0_sstables.items.len == 0);
 
         if (state.levels.items.len < self.options.num_tiers) return null;
@@ -296,4 +306,32 @@ pub const TieredCompactionController = struct {
             .bottom_tier_included = state.levels.items.len == num_tiers_to_take,
         };
     }
+
+    // fn applyCompactionResult(
+    //     _: TieredCompactionController,
+    //     state: *storage.StorageState,
+    //     task: TieredCompactionTask,
+    //     output: []usize,
+    // ) !std.ArrayList(usize) {
+    //     std.debug.assert(state.l0_sstables.items.len == 0);
+
+    //     var tier_to_remove = std.AutoHashMap(usize, std.ArrayList(usize));
+    //     defer tier_to_remove.deinit();
+    //     for (0.., task.tiers.items) |i, t| {
+    //         try tier_to_remove.put(i, t);
+    //     }
+
+    //     var levels = std.ArrayList(usize).init(state.allocator);
+    //     defer levels.deinit();
+    //     var new_tier_added = false;
+    //     var files_to_remove = std.ArrayList(usize).init(state.allocator);
+    //     defer files_to_remove.deinit();
+    //     for (state.levels.items, 0..) |t, i| {
+    //         if (tier_to_remove.remove(i)) {
+    //             try files_to_remove.appendSlice(t.items);
+    //         } else {
+    //             try levels.insert(i, try t.clone());
+    //         }
+    //     }
+    // }
 };
