@@ -218,3 +218,82 @@ fn sliceEquals(a: []const usize, b: []const usize) bool {
     }
     return true;
 }
+
+// ------------------ tiered compaction ------------------
+
+pub const TieredCompactionOptions = struct {
+    num_tiers: usize,
+    max_size_amplification_percent: usize,
+    size_ratio: usize,
+    min_merge_width: usize,
+    max_merge_width: ?usize,
+};
+
+pub const TieredCompactionTask = struct {
+    tiers: std.ArrayList(std.ArrayList(usize)),
+    bottom_tier_included: bool,
+
+    pub fn deinit(self: *TieredCompactionTask) void {
+        self.tiers.deinit();
+    }
+};
+
+pub const TieredCompactionController = struct {
+    options: TieredCompactionOptions,
+    pub fn init(options: TieredCompactionOptions) TieredCompactionController {
+        return .{ .options = options };
+    }
+
+    pub fn generateCompactionTask(self: TieredCompactionController, state: *storage.StorageState) !?TieredCompactionTask {
+        std.debug.assert(state.l0_sstables.items.len == 0);
+
+        if (state.levels.items.len < self.options.num_tiers) return null;
+
+        // compaction triggered by space amplification ratio
+        var size: usize = 0;
+        for (0..state.levels.items.len - 1) |i| {
+            size += state.levels.items[i].items.len;
+        }
+        const space_amp_ration = @as(f64, @floatFromInt(size)) / @as(f64, @floatFromInt(state.levels.getLast().items.len)) * 100.0;
+
+        if (space_amp_ration >= self.options.max_size_amplification_percent) {
+            std.debug.print("compaction triggered by space amplification ratio {} >= {d}\n", .{ space_amp_ration, self.options.max_size_amplification_percent });
+            return .{
+                .tiers = try state.levels.clone(),
+                .bottom_tier_included = true,
+            };
+        }
+
+        const size_ration_trigger = (100.0 + @as(f64, @floatFromInt(self.options.size_ratio))) / 100.0;
+        // compaction triggered by size ratio
+        size = 0;
+        for (0..state.levels.items.len - 1) |i| {
+            size += state.levels.items[i].items.len;
+            const next_level_size = state.levels.items[i + 1].items.len;
+            const current_size_ratio = @as(f64, @floatFromInt(next_level_size)) / @as(f64, @floatFromInt(size));
+            if (current_size_ratio > size_ration_trigger and (i + 1) >= self.options.min_merge_width) {
+                std.debug.print("compaction triggered by size ratio {} > {}\n", .{ current_size_ratio * 100.0, size_ration_trigger * 100 });
+
+                var tiers = try std.ArrayList(std.ArrayList(usize)).initCapacity(state.allocator, i + 1);
+                errdefer tiers.deinit();
+                try tiers.appendSlice(state.levels.items[0 .. i + 1]);
+
+                return .{
+                    .tiers = tiers,
+                    .bottom_tier_included = (i + 1) == self.levels.items.len,
+                };
+            }
+        }
+
+        // trying to reduce sorted runs without respecting size ratio
+        const num_tiers_to_take = @min(state.levels.items.len, self.options.max_merge_width orelse std.math.maxInt(usize));
+        std.debug.print("compaction triggered by reducing sorted runs\n", .{});
+        var tiers = try std.ArrayList(std.ArrayList(usize)).initCapacity(state.allocator, num_tiers_to_take);
+        errdefer tiers.deinit();
+        try tiers.appendSlice(state.levels.items[0..num_tiers_to_take]);
+        return .{
+            .tiers = tiers,
+            .bottom_tier_included = state.levels.items.len == num_tiers_to_take,
+        };
+    }
+};
