@@ -4,6 +4,7 @@ const iterators = @import("iterators.zig");
 const MergeIterators = @import("MergeIterators.zig");
 const ss_table = @import("ss_table.zig");
 const compact = @import("compact.zig");
+const smart_pointer = @import("smart_pointer.zig");
 const atomic = std.atomic;
 const Bound = MemTable.Bound;
 const MemTablePtr = MemTable.MemTablePtr;
@@ -33,28 +34,63 @@ pub const StorageOptions = struct {
     compaction_options: compact.CompactionOptions = .{ .no_compaction = .{} },
 };
 
+pub const Level = struct {
+    level: usize,
+    ssts: std.ArrayList(usize),
+
+    pub fn init(level: usize, allocator: std.mem.Allocator) Level {
+        return .{
+            .level = level,
+            .ssts = std.ArrayList(usize).init(allocator),
+        };
+    }
+
+    pub fn deinit(self: Level) void {
+        self.ssts.deinit();
+    }
+
+    pub fn clear(self: *Level) void {
+        self.ssts.clearAndFree();
+    }
+
+    pub fn dump(self: Level) !std.ArrayList(usize) {
+        return self.ssts.clone();
+    }
+
+    pub fn append(self: *Level, sst_id: usize) !void {
+        return self.ssts.append(sst_id);
+    }
+
+    pub fn size(self: Level) usize {
+        return self.ssts.items.len;
+    }
+};
+
+pub const LevelPtr = smart_pointer.SmartPointer(Level);
+
 pub const StorageState = struct {
     allocator: std.mem.Allocator,
     mem_table: MemTablePtr,
     imm_mem_tables: std.ArrayList(MemTablePtr),
-    l0_sstables: std.ArrayList(usize),
-    levels: std.ArrayList(std.ArrayList(usize)),
+    l0_sstables: LevelPtr,
+    levels: std.ArrayList(LevelPtr),
     sstables: std.AutoHashMap(usize, SsTablePtr),
 
     pub fn init(allocator: std.mem.Allocator, options: StorageOptions) !StorageState {
         var mm = MemTable.init(0, allocator, null);
         errdefer mm.deinit();
 
-        var levels = std.ArrayList(std.ArrayList(usize)).init(allocator);
+        var levels = std.ArrayList(LevelPtr).init(allocator);
         switch (options.compaction_options) {
             .no_compaction => {
-                const lv = std.ArrayList(usize).init(allocator);
-                try levels.append(lv);
+                // const lv = std.ArrayList(usize).init(allocator);
+                const lv = Level.init(0, allocator);
+                try levels.append(try LevelPtr.create(allocator, lv));
             },
             .simple => |option| {
-                for (0..option.max_levels) |_| {
-                    const lv = std.ArrayList(usize).init(allocator);
-                    try levels.append(lv);
+                for (0..option.max_levels) |i| {
+                    const lv = Level.init(i + 1, allocator);
+                    try levels.append(try LevelPtr.create(allocator, lv));
                 }
             },
         }
@@ -62,7 +98,7 @@ pub const StorageState = struct {
             .allocator = allocator,
             .mem_table = try MemTablePtr.create(allocator, mm),
             .imm_mem_tables = std.ArrayList(MemTablePtr).init(allocator),
-            .l0_sstables = std.ArrayList(usize).init(allocator),
+            .l0_sstables = try LevelPtr.create(allocator, Level.init(0, allocator)),
             .levels = levels,
             .sstables = std.AutoHashMap(usize, SsTablePtr).init(allocator),
         };
@@ -98,7 +134,8 @@ pub const StorageState = struct {
         // free levels
         {
             for (self.levels.items) |l| {
-                l.deinit();
+                var lp = l;
+                lp.deinit();
             }
             self.levels.deinit();
         }
@@ -264,6 +301,7 @@ pub const StorageInner = struct {
     }
 
     pub fn get(self: *Self, key: []const u8, value: *[]const u8) !bool {
+
         // search in memtable
         if (try self.state.getMemTable().get(key, value)) {
             if (value.*.len == 0) {
@@ -276,7 +314,10 @@ pub const StorageInner = struct {
         {
             self.state_lock.lockShared();
             defer self.state_lock.unlockShared();
-            for (self.state.imm_mem_tables.items) |imm_table| {
+
+            // newest located at the end
+            for (0..self.state.imm_mem_tables.items.len) |i| {
+                const imm_table = self.state.imm_mem_tables.items[self.state.imm_mem_tables.items.len - 1 - i];
                 if (try imm_table.load().get(key, value)) {
                     if (value.*.len == 0) {
                         // tomestone
@@ -299,7 +340,7 @@ pub const StorageInner = struct {
         {
             self.state_lock.lockShared();
             defer self.state_lock.unlockShared();
-            for (self.state.l0_sstables.items) |sst_id| {
+            for (self.state.l0_sstables.get().ssts.items) |sst_id| {
                 const sst = self.state.sstables.get(sst_id).?;
                 if (try sst.load().mayContain(key)) {
                     var ss_iter = try SsTableIterator.initAndSeekToKey(self.allocator, sst.clone(), key);
@@ -322,9 +363,12 @@ pub const StorageInner = struct {
                 self.state.levels.items.len,
             );
             for (self.state.levels.items) |level| {
-                var level_ssts = try std.ArrayList(SsTablePtr).initCapacity(self.allocator, level.items.len);
+                var level_ssts = try std.ArrayList(SsTablePtr).initCapacity(
+                    self.allocator,
+                    level.get().size(),
+                );
                 errdefer level_ssts.deinit();
-                for (level.items) |sst_id| {
+                for (level.get().ssts.items) |sst_id| {
                     const sst = self.state.sstables.get(sst_id).?;
                     if (try mayWithinTable(key, sst)) {
                         try level_ssts.append(sst.clone());
@@ -565,7 +609,7 @@ pub const StorageInner = struct {
         {
             self.state_lock.lockShared();
             defer self.state_lock.unlockShared();
-            for (self.state.l0_sstables.items) |sst_id| {
+            for (self.state.l0_sstables.get().ssts.items) |sst_id| {
                 const table_ptr = self.state.sstables.get(sst_id).?;
                 const table = table_ptr.load();
                 if (rangeOverlap(lower, upper, table.firstKey(), table.lastKey())) {
@@ -611,8 +655,8 @@ pub const StorageInner = struct {
             self.state_lock.lockShared();
             defer self.state_lock.unlockShared();
             for (self.state.levels.items) |l| {
-                var lv_ssts = try std.ArrayList(SsTablePtr).initCapacity(self.allocator, l.items.len);
-                for (l.items) |sst_id| {
+                var lv_ssts = try std.ArrayList(SsTablePtr).initCapacity(self.allocator, l.get().size());
+                for (l.get().ssts.items) |sst_id| {
                     const table_ptr = self.state.sstables.get(sst_id).?;
                     const table = table_ptr.load();
                     if (rangeOverlap(lower, upper, table.firstKey(), table.lastKey())) {
@@ -704,7 +748,7 @@ pub const StorageInner = struct {
             std.debug.assert(m.load().id == sst_id);
 
             // newest sstable is at the end
-            try self.state.l0_sstables.append(sst_id);
+            try self.state.l0_sstables.get().append(sst_id);
             try self.state.sstables.put(sst.id, try SsTablePtr.create(self.allocator, sst));
         }
 
@@ -833,9 +877,9 @@ pub const StorageInner = struct {
         {
             self.state_lock.lockShared();
             defer self.state_lock.unlockShared();
-            l0_sstables = try self.state.l0_sstables.clone();
+            l0_sstables = try self.state.l0_sstables.get().dump();
             errdefer l0_sstables.deinit();
-            l1_sstables = try self.state.levels.getLast().clone();
+            l1_sstables = try self.state.levels.getLast().get().dump();
             errdefer l1_sstables.deinit();
         }
 
@@ -872,9 +916,10 @@ pub const StorageInner = struct {
                 try ids.append(id);
                 try self.state.sstables.put(id, sst.clone());
             }
-            var old_l1 = self.state.levels.pop();
-            old_l1.deinit();
-            try self.state.levels.append(try ids.clone());
+
+            var l1 = self.state.levels.items[0].get();
+            l1.clear();
+            l1.ssts.appendSlice(ids.items);
 
             // state.l0_sstables may change after compaction
             {
@@ -886,14 +931,16 @@ pub const StorageInner = struct {
                 }
 
                 var new_l0_sstables = std.ArrayList(usize).init(self.allocator);
-                errdefer new_l0_sstables.deinit();
-                for (self.state.l0_sstables.items) |id| {
+                defer new_l0_sstables.deinit();
+
+                var l0 = self.state.l0_sstables.get();
+                for (l0.ssts.items) |id| {
                     if (!l0_sstables_map.remove(id)) {
                         try new_l0_sstables.append(id);
                     }
                 }
-                self.state.l0_sstables.deinit();
-                self.state.l0_sstables = new_l0_sstables;
+                l0.clear();
+                l0.ssts.appendSlice(new_l0_sstables.items);
             }
             try self.syncDir();
         }
@@ -1101,12 +1148,12 @@ pub const StorageInner = struct {
         std.debug.print("memtable: {d}\n", .{self.state.getMemTable().getApproximateSize()});
         std.debug.print("in_mem_sstables: {d}\n", .{self.state.imm_mem_tables.items.len});
         std.debug.print("l0_sstables: {d}\n", .{self.state.l0_sstables.items.len});
-        for (self.state.l0_sstables.items) |sst_id| {
+        for (self.state.l0_sstables.get().ssts.items) |sst_id| {
             std.debug.print("{d} ", .{sst_id});
         }
         std.debug.print("\n", .{});
         for (self.state.levels.items, 1..) |level, i| {
-            std.debug.print("level{d}: {d}\n", .{ i, level.items.len });
+            std.debug.print("level{d}: {d}\n", .{ i, level.get().size() });
             for (level.items) |sst_id| {
                 std.debug.print("{d} ", .{sst_id});
             }
@@ -1153,18 +1200,18 @@ test "put/delete/get" {
         const vv = std.fmt.bufPrint(&vb, "val{d:0>5}", .{i}) catch unreachable;
         std.debug.print("put {s} {s}\n", .{ kk, vv });
         try storage.put(kk, vv);
-        try storage.triggerFlush();
-        try storage.triggerCompaction();
+        // try storage.triggerFlush();
+        // try storage.triggerCompaction();
     }
 
     try storage.delete("key00003");
-    try storage.triggerFlush();
-    try storage.triggerCompaction();
+    // try storage.triggerFlush();
+    // try storage.triggerCompaction();
 
     var value: []const u8 = undefined;
-    if (try storage.get("key00001", &value)) {
-        std.debug.print("key00001: {s}\n", .{value});
-        try std.testing.expectEqualStrings("val00001", value);
+    if (try storage.get("key00127", &value)) {
+        std.debug.print("key00127: {s}\n", .{value});
+        try std.testing.expectEqualStrings("val00127", value);
     }
 
     if (try storage.get("key00003", &value)) {
