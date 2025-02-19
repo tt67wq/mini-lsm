@@ -186,7 +186,7 @@ pub fn get(self: Self, key: []const u8, value: *[]const u8) !bool {
     defer self.allocator.free(levels);
     const node = self.descend(key, levels);
     if (std.mem.eql(u8, key, node.key)) {
-        value.* = head.value;
+        value.* = node.value;
         return true;
     }
     return false;
@@ -282,7 +282,7 @@ pub fn insert(self: *Self, k: []const u8, v: []const u8) !void {
     const prev = self.descend(k, levels);
     if (std.mem.eql(u8, prev.key, k)) {
         self.allocator.destroy(node);
-        prev.value = v;
+        prev.value = vv;
         return;
     }
     const next = prev.next;
@@ -406,12 +406,25 @@ test "skiplist" {
         try list.insert(kk, vv);
     }
 
+    for (0..16) |i| {
+        var kb: [10]u8 = undefined;
+        var vb: [10]u8 = undefined;
+        const kk = try std.fmt.bufPrint(&kb, "key{d:0>5}", .{i});
+        const vv = try std.fmt.bufPrint(&vb, "val{d:0>5}", .{i});
+
+        var v: []const u8 = undefined;
+
+        if (try list.get(kk, &v)) {
+            std.debug.print("get {s} => {s}\n", .{ kk, v });
+            try std.testing.expect(std.mem.eql(u8, v, vv));
+        }
+    }
+
     const fk = list.firstKey().?;
     const lk = list.lastKey().?;
     std.debug.print("first key: {s}, last key: {s}\n", .{ fk, lk });
 
-    // list.display();
-    // std.debug.print("--------------------\n", .{});
+    std.debug.print("--------------------\n", .{});
 
     var iter = list.scan(
         Bound.init("key00008", .included),
