@@ -46,18 +46,14 @@ lock: RwLock,
 wal: ?Wal,
 id: usize,
 allocator: std.mem.Allocator,
-arena: std.heap.ArenaAllocator,
 approximate_size: atomic.Value(usize) = atomic.Value(usize).init(0),
 
 pub fn init(id: usize, allocator: std.mem.Allocator, path: ?[]const u8) Self {
-    const arena = std.heap.ArenaAllocator.init(allocator);
-
     return Self{
         .skiplist = skiplist.init(allocator, rng.random()),
         .wal = walInit(path),
         .id = id,
         .allocator = allocator,
-        .arena = arena,
         .lock = .{},
     };
 }
@@ -77,7 +73,6 @@ pub fn deinit(self: *Self) void {
     if (self.wal) |_| {
         self.wal.?.deinit();
     }
-    self.arena.deinit();
 }
 
 pub fn recoverFromWal(self: *Self) !void {
@@ -95,12 +90,14 @@ pub fn recoverFromWal(self: *Self) !void {
                         else => return err,
                     }
                 };
-                const allocator = mm.arena.allocator();
+                const allocator = mm.allocator;
 
                 const kbuf = try allocator.alloc(u8, klen);
+                defer allocator.free(kbuf);
                 _ = try reader.read(kbuf);
                 const vlen = try reader.readInt(u32, .big);
                 const vbuf = try allocator.alloc(u8, vlen);
+                defer allocator.free(vbuf);
                 _ = try reader.read(vbuf);
 
                 try mm.putToList(kbuf, vbuf);
@@ -127,8 +124,6 @@ pub fn recoverFromWal(self: *Self) !void {
 }
 
 fn putToList(self: *Self, key: []const u8, value: []const u8) !void {
-    // const kk = try self.arena.allocator().dupe(u8, key);
-    // const vv = try self.arena.allocator().dupe(u8, value);
     {
         self.lock.lock();
         defer self.lock.unlock();
