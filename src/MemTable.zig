@@ -39,6 +39,8 @@ pub const MemTableIterator = struct {
     }
 };
 
+var rng = std.rand.DefaultPrng.init(0);
+
 skiplist: skiplist,
 lock: RwLock,
 wal: ?Wal,
@@ -48,7 +50,6 @@ arena: std.heap.ArenaAllocator,
 approximate_size: atomic.Value(usize) = atomic.Value(usize).init(0),
 
 pub fn init(id: usize, allocator: std.mem.Allocator, path: ?[]const u8) Self {
-    var rng = std.rand.DefaultPrng.init(0);
     const arena = std.heap.ArenaAllocator.init(allocator);
 
     return Self{
