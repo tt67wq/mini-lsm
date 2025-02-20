@@ -238,7 +238,8 @@ pub const StorageInner = struct {
 
         // TODO: flush memtable
 
-        // sync dir
+        // sync
+        try self.sync();
         try self.syncDir();
 
         // free state
@@ -254,7 +255,6 @@ pub const StorageInner = struct {
         if (self.options.enable_wal) {
             try self.state.getMemTable().syncWal();
         }
-        try self.syncDir();
     }
 
     pub fn syncDir(self: Self) !void {
@@ -842,7 +842,6 @@ pub const StorageInner = struct {
                     try ssts_to_remove.append(kv.value);
                 }
             }
-            try self.syncDir();
         }
 
         for (ssts_to_remove.items) |sst| {
