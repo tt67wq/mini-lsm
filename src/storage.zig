@@ -155,6 +155,8 @@ pub const WriteBatchRecord = union(enum) {
     delete: []const u8,
 };
 
+pub const StorageInnerPtr = smart_pointer.SmartPointer(StorageInner);
+
 pub const StorageInner = struct {
     const Self = @This();
 
