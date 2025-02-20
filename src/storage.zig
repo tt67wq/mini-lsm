@@ -471,7 +471,6 @@ pub const StorageInner = struct {
         }
 
         self.state_lock.lockShared();
-        errdefer self.state_lock.unlockShared();
         // double check
         if (self.state.getMemTable().getApproximateSize() >= self.options.target_sst_size) {
             self.state_lock.unlockShared();
@@ -771,7 +770,9 @@ pub const StorageInner = struct {
     fn flushLoop(self: *Self) !void {
         while (!self.terminate.isSet()) {
             try self.triggerFlush();
-            try self.terminate.timedWait(50 * std.time.ns_per_ms);
+            self.terminate.timedWait(50 * std.time.ns_per_ms) catch |err| switch (err) {
+                error.Timeout => {},
+            };
         }
     }
 
@@ -859,7 +860,9 @@ pub const StorageInner = struct {
             inline else => {
                 while (!self.terminate.isSet()) {
                     try self.triggerCompaction();
-                    try self.terminate.timedWait(50 * std.time.ns_per_ms);
+                    self.terminate.timedWait(50 * std.time.ns_per_ms) catch |err| switch (err) {
+                        error.Timeout => {},
+                    };
                 }
             },
         }
