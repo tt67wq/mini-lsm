@@ -232,9 +232,7 @@ pub const StorageInner = struct {
         self.wg.wait();
 
         // sync wal
-        if (self.options.enable_wal) {
-            try self.state.getMemTable().syncWal();
-        }
+        try self.sync();
 
         // TODO: flush memtable
 
@@ -250,8 +248,6 @@ pub const StorageInner = struct {
     }
 
     pub fn sync(self: *Self) !void {
-        self.state_lock.lockShared();
-        defer self.state_lock.unlockShared();
         if (self.options.enable_wal) {
             try self.state.getMemTable().syncWal();
         }
