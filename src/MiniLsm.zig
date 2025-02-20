@@ -1,14 +1,17 @@
 const std = @import("std");
 const storage = @import("storage.zig");
-const Bound = @import("MemTable.zig").Bound;
 const LsmIterator = @import("iterators.zig").LsmIterator;
+
+pub const WriteBatchRecord = storage.WriteBatchRecord;
+pub const StorageOptions = storage.StorageOptions;
+pub const Bound = @import("MemTable.zig").Bound;
 
 const Self = @This();
 
 allocator: std.mem.Allocator,
 inner: storage.StorageInner,
 
-pub fn init(allocator: std.mem.Allocator, path: []const u8, options: storage.StorageOptions) !Self {
+pub fn init(allocator: std.mem.Allocator, path: []const u8, options: StorageOptions) !Self {
     var inner = try storage.StorageInner.init(allocator, path, options);
     errdefer inner.deinit();
 
@@ -40,7 +43,7 @@ pub fn del(self: *Self, key: []const u8) !void {
     return self.inner.delete(key);
 }
 
-pub fn writeBatch(self: *Self, batch: []const storage.WriteBatchRecord) !void {
+pub fn writeBatch(self: *Self, batch: []const WriteBatchRecord) !void {
     return self.inner.writeBatch(batch);
 }
 

@@ -775,6 +775,12 @@ pub const StorageInner = struct {
         }
     }
 
+    fn mustFlushLoop(self: *Self) void {
+        self.flushLoop() catch |err| {
+            std.log.err("flushLoop failed: {s}", .{@errorName(err)});
+        };
+    }
+
     fn triggerCompaction(self: *Self) !void {
         var task: CompactionTask = undefined;
         {
@@ -859,12 +865,18 @@ pub const StorageInner = struct {
         }
     }
 
+    fn mustCompactionLoop(self: *Self) void {
+        self.compactionLoop() catch |err| {
+            std.log.err("compactionLoop failed: {s}", .{@errorName(err)});
+        };
+    }
+
     pub fn spawnFlushThread(self: *Self) void {
-        self.wg.spawnManager(self.flushLoop, .{});
+        self.wg.spawnManager(mustFlushLoop, .{self});
     }
 
     pub fn spawnCompactionThread(self: *Self) void {
-        self.wg.spawnManager(self.compactionLoop, .{});
+        self.wg.spawnManager(mustCompactionLoop, .{self});
     }
 
     pub fn forceFullCompaction(self: *Self) !void {
@@ -968,6 +980,10 @@ pub const StorageInner = struct {
             },
             .simple => |s| {
                 return self.compactSimple(s);
+            },
+            inline else => {
+                // TODO
+                unreachable;
             },
         }
     }
