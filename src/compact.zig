@@ -239,7 +239,7 @@ pub const TieredCompactionOptions = struct {
 };
 
 pub const TieredCompactionTask = struct {
-    tiers: std.ArrayList(std.ArrayList(usize)),
+    tiers: std.ArrayList(storage.LevelPtr),
     bottom_tier_included: bool,
 
     pub fn deinit(self: *TieredCompactionTask) void {
@@ -262,7 +262,7 @@ pub const TieredCompactionController = struct {
         // compaction triggered by space amplification ratio
         var size: usize = 0;
         for (0..state.levels.items.len - 1) |i| {
-            size += state.levels.items[i].items.len;
+            size += state.levels.items[i].get().size();
         }
         const space_amp_ration = @as(f64, @floatFromInt(size)) / @as(f64, @floatFromInt(state.levels.getLast().items.len)) * 100.0;
 
@@ -278,8 +278,8 @@ pub const TieredCompactionController = struct {
         // compaction triggered by size ratio
         size = 0;
         for (0..state.levels.items.len - 1) |i| {
-            size += state.levels.items[i].items.len;
-            const next_level_size = state.levels.items[i + 1].items.len;
+            size += state.levels.items[i].get().size();
+            const next_level_size = state.levels.items[i + 1].get().size();
             const current_size_ratio = @as(f64, @floatFromInt(next_level_size)) / @as(f64, @floatFromInt(size));
             if (current_size_ratio > size_ration_trigger and (i + 1) >= self.options.min_merge_width) {
                 std.debug.print("compaction triggered by size ratio {} > {}\n", .{ current_size_ratio * 100.0, size_ration_trigger * 100 });
@@ -307,31 +307,54 @@ pub const TieredCompactionController = struct {
         };
     }
 
-    // fn applyCompactionResult(
-    //     _: TieredCompactionController,
-    //     state: *storage.StorageState,
-    //     task: TieredCompactionTask,
-    //     output: []usize,
-    // ) !std.ArrayList(usize) {
-    //     std.debug.assert(state.l0_sstables.items.len == 0);
+    fn applyCompactionResult(
+        _: TieredCompactionController,
+        state: *storage.StorageState,
+        task: TieredCompactionTask,
+        output: []usize,
+    ) !std.ArrayList(usize) {
+        std.debug.assert(state.l0_sstables.get().size() == 0);
 
-    //     var tier_to_remove = std.AutoHashMap(usize, std.ArrayList(usize));
-    //     defer tier_to_remove.deinit();
-    //     for (0.., task.tiers.items) |i, t| {
-    //         try tier_to_remove.put(i, t);
-    //     }
+        var tier_to_remove = std.AutoHashMap(usize, std.ArrayList(usize));
+        defer tier_to_remove.deinit();
+        for (task.tiers.items) |t| {
+            const lv = t.get();
+            try tier_to_remove.put(lv.level, lv.ssts);
+        }
 
-    //     var levels = std.ArrayList(usize).init(state.allocator);
-    //     defer levels.deinit();
-    //     var new_tier_added = false;
-    //     var files_to_remove = std.ArrayList(usize).init(state.allocator);
-    //     defer files_to_remove.deinit();
-    //     for (state.levels.items, 0..) |t, i| {
-    //         if (tier_to_remove.remove(i)) {
-    //             try files_to_remove.appendSlice(t.items);
-    //         } else {
-    //             try levels.insert(i, try t.clone());
-    //         }
-    //     }
-    // }
+        var levels = std.ArrayList(storage.LevelPtr).init(state.allocator);
+        defer levels.deinit();
+        var new_tier_added = false;
+        var files_to_remove = std.ArrayList(usize).init(state.allocator);
+        errdefer files_to_remove.deinit();
+        for (state.levels.items) |t| {
+            if (tier_to_remove.fetchRemove(t.get().level)) |tier| {
+                std.debug.assert(sliceEquals(tier.value, t.get().ssts));
+                try files_to_remove.appendSlice(tier.value);
+            } else {
+                try levels.append(t.clone());
+            }
+            if (tier_to_remove.count() == 0 and !new_tier_added) {
+                new_tier_added = true;
+                var new_level = std.ArrayList(usize).init(state.allocator);
+                errdefer new_level.deinit();
+                try new_level.appendSlice(output);
+                levels.append(storage.LevelPtr.create(state.allocator, .{
+                    .level = output[0],
+                    .ssts = new_level,
+                }));
+            }
+        }
+        std.debug.assert(tier_to_remove.count() == 0);
+        {
+            for (state.levels.items) |l| {
+                var lp = l;
+                lp.deinit();
+            }
+            state.levels.clearAndFree();
+        }
+        try state.levels.appendSlice(levels.items);
+
+        return files_to_remove;
+    }
 };
