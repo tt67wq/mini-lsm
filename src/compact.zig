@@ -38,7 +38,7 @@ pub const CompactionOptions = union(enum) {
 pub const CompactionController = union(enum) {
     no_compaction: struct {},
     simple: SimpleLeveledCompactionController,
-    // tiered: TieredCompactionController,
+    tiered: TieredCompactionController,
 
     pub fn generateCompactionTask(self: CompactionController, state: *storage.StorageState) !?CompactionTask {
         switch (self) {
@@ -46,10 +46,10 @@ pub const CompactionController = union(enum) {
                 if (try controller.generateCompactionTask(state)) |task| return .{ .simple = task };
                 return null;
             },
-            // .tiered => |controller| {
-            //     if (try controller.generateCompactionTask(state)) |task| return .{ .tiered = task };
-            //     return null;
-            // },
+            .tiered => |controller| {
+                if (try controller.generateCompactionTask(state)) |task| return .{ .tiered = task };
+                return null;
+            },
             inline else => unreachable,
         }
     }
@@ -64,12 +64,16 @@ pub const CompactionController = union(enum) {
             .simple => |controller| {
                 return try controller.applyCompactionResult(state, task.simple, output);
             },
+            .tiered => |controller| {
+                return try controller.applyCompactionResult(state, task.tiered, output);
+            },
             inline else => unreachable,
         }
     }
 
     pub fn flushToL0(self: CompactionController) bool {
         switch (self) {
+            .tiered => false,
             inline else => true,
         }
     }

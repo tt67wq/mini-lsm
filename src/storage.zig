@@ -25,6 +25,7 @@ const ForceFullCompaction = compact.ForceFullCompaction;
 const CompactionController = compact.CompactionController;
 const SimpleLeveledCompactionController = compact.SimpleLeveledCompactionController;
 const SimpleLeveledCompactionTask = compact.SimpleLeveledCompactionTask;
+const TieredCompactionController = compact.TieredCompactionController;
 
 pub const StorageOptions = struct {
     block_size: usize,
@@ -83,7 +84,6 @@ pub const StorageState = struct {
         var levels = std.ArrayList(LevelPtr).init(allocator);
         switch (options.compaction_options) {
             .no_compaction => {
-                // const lv = std.ArrayList(usize).init(allocator);
                 const lv = Level.init(0, allocator);
                 try levels.append(try LevelPtr.create(allocator, lv));
             },
@@ -93,6 +93,7 @@ pub const StorageState = struct {
                     try levels.append(try LevelPtr.create(allocator, lv));
                 }
             },
+            inline else => {},
         }
         return StorageState{
             .allocator = allocator,
@@ -178,6 +179,7 @@ pub const StorageInner = struct {
         // compaction controller
         const compaction_controller = switch (options.compaction_options) {
             .simple => |option| CompactionController{ .simple = SimpleLeveledCompactionController.init(option) },
+            .tiered => |option| CompactionController{ .tiered = TieredCompactionController.init(option) },
             .no_compaction => CompactionController{ .no_compaction = .{} },
         };
 
