@@ -59,4 +59,6 @@ pub fn main() !void {
         std.debug.print("key: {s}, value: {s}\n", .{ it.key(), it.value() });
         try it.next();
     }
+
+    std.debug.print("Done.\n", .{});
 }
