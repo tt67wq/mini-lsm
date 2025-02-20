@@ -35,8 +35,8 @@ pub const BlockBuilder = struct {
     }
 
     pub fn reset(self: *Self) void {
-        self.offset_v.clearAndFree();
-        self.data_v.clearAndFree();
+        self.offset_v.clearRetainingCapacity();
+        self.data_v.clearRetainingCapacity();
         if (self.first_key.len > 0) self.allocator.free(self.first_key);
         self.first_key = "";
     }
@@ -258,8 +258,8 @@ pub const BlockIterator = struct {
 
     fn seekTo(self: *Self, idx: usize) !void {
         if (idx >= self.block.get().offset_v.items.len) {
-            self.key_v.clearAndFree();
-            self.value_v.clearAndFree();
+            self.key_v.clearRetainingCapacity();
+            self.value_v.clearRetainingCapacity();
             return;
         }
         const offset: usize = @intCast(self.block.get().offset_v.items[idx]);
@@ -276,7 +276,7 @@ pub const BlockIterator = struct {
         const kb = try self.allocator.alloc(u8, key_len);
         defer self.allocator.free(kb);
         _ = try reader.read(kb);
-        self.key_v.clearAndFree();
+        self.key_v.clearRetainingCapacity();
 
         const kw = self.key_v.writer();
 
@@ -287,7 +287,7 @@ pub const BlockIterator = struct {
         const vb = try self.allocator.alloc(u8, value_len);
         defer self.allocator.free(vb);
         _ = try reader.read(vb);
-        self.value_v.clearAndFree();
+        self.value_v.clearRetainingCapacity();
         _ = try self.value_v.writer().write(vb);
     }
 
