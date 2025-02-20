@@ -19,19 +19,19 @@ pub fn build(b: *std.Build) void {
     // set a preferred release mode, allowing the user to decide how to optimize.
     const optimize = b.standardOptimizeOption(.{});
 
-    const storage_lib = b.addSharedLibrary(.{
-        .name = "storage",
-        .root_source_file = b.path("src/storage.zig"),
+    const mini_lsm = b.addSharedLibrary(.{
+        .name = "mini_lsm",
+        .root_source_file = b.path("src/MiniLsm.zig"),
         .target = target,
         .optimize = optimize,
     });
-    storage_lib.linkLibC();
-    storage_lib.addIncludePath(LazyPath{ .cwd_relative = "./include" });
-    storage_lib.addCSourceFiles(.{
+    mini_lsm.linkLibC();
+    mini_lsm.addIncludePath(LazyPath{ .cwd_relative = "./include" });
+    mini_lsm.addCSourceFiles(.{
         .files = &c_source_files,
         .flags = &c_flags,
     });
-    b.installArtifact(storage_lib);
+    b.installArtifact(mini_lsm);
 
     const exe = b.addExecutable(.{
         .name = "demo",
@@ -40,7 +40,12 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    exe.linkLibrary(storage_lib);
+    exe.linkLibC();
+    exe.addIncludePath(LazyPath{ .cwd_relative = "./include" });
+    exe.addCSourceFiles(.{
+        .files = &c_source_files,
+        .flags = &c_flags,
+    });
 
     if (b.option(bool, "enable-demo", "install demo app") orelse false) {
         b.installArtifact(exe);
@@ -48,23 +53,23 @@ pub fn build(b: *std.Build) void {
 
     // Creates a step for unit testing. This only builds the test executable
     // but does not run it.
-    const storage_unit_tests = b.addTest(.{
-        .root_source_file = b.path("src/storage.zig"),
+    const mini_lsm_unit_tests = b.addTest(.{
+        .root_source_file = b.path("src/MiniLsm.zig"),
         .target = target,
         .optimize = optimize,
     });
-    storage_unit_tests.linkLibC();
-    storage_unit_tests.addIncludePath(LazyPath{ .cwd_relative = "./include" });
-    storage_unit_tests.addCSourceFiles(.{
+    mini_lsm_unit_tests.linkLibC();
+    mini_lsm_unit_tests.addIncludePath(LazyPath{ .cwd_relative = "./include" });
+    mini_lsm_unit_tests.addCSourceFiles(.{
         .files = &c_source_files,
         .flags = &c_flags,
     });
 
-    const run_storage_unit_tests = b.addRunArtifact(storage_unit_tests);
+    const run_mini_lsm_unit_tests = b.addRunArtifact(mini_lsm_unit_tests);
 
     // Similar to creating the run step earlier, this exposes a `test` step to
     // the `zig build --help` menu, providing a way for the user to request
     // running the unit tests.
     const test_step = b.step("test", "Run unit tests");
-    test_step.dependOn(&run_storage_unit_tests.step);
+    test_step.dependOn(&run_mini_lsm_unit_tests.step);
 }

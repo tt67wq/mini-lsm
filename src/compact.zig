@@ -259,7 +259,7 @@ pub const TieredCompactionController = struct {
     }
 
     fn generateCompactionTask(self: TieredCompactionController, state: *storage.StorageState) !?TieredCompactionTask {
-        std.debug.assert(state.l0_sstables.items.len == 0);
+        std.debug.assert(state.l0_sstables.get().size() == 0);
 
         if (state.levels.items.len < self.options.num_tiers) return null;
 
@@ -268,7 +268,10 @@ pub const TieredCompactionController = struct {
         for (0..state.levels.items.len - 1) |i| {
             size += state.levels.items[i].get().size();
         }
-        const space_amp_ration = @as(f64, @floatFromInt(size)) / @as(f64, @floatFromInt(state.levels.getLast().items.len)) * 100.0;
+        const space_amp_ration = @as(
+            usize,
+            @intFromFloat(@as(f64, @floatFromInt(size)) / @as(f64, @floatFromInt(state.levels.getLast().get().size())) * 100.0),
+        );
 
         if (space_amp_ration >= self.options.max_size_amplification_percent) {
             std.debug.print("compaction triggered by space amplification ratio {} >= {d}\n", .{ space_amp_ration, self.options.max_size_amplification_percent });
@@ -288,13 +291,13 @@ pub const TieredCompactionController = struct {
             if (current_size_ratio > size_ration_trigger and (i + 1) >= self.options.min_merge_width) {
                 std.debug.print("compaction triggered by size ratio {} > {}\n", .{ current_size_ratio * 100.0, size_ration_trigger * 100 });
 
-                var tiers = try std.ArrayList(std.ArrayList(usize)).initCapacity(state.allocator, i + 1);
+                var tiers = try std.ArrayList(storage.LevelPtr).initCapacity(state.allocator, i + 1);
                 errdefer tiers.deinit();
                 try tiers.appendSlice(state.levels.items[0 .. i + 1]);
 
                 return .{
                     .tiers = tiers,
-                    .bottom_tier_included = (i + 1) == self.levels.items.len,
+                    .bottom_tier_included = (i + 1) == state.levels.items.len,
                 };
             }
         }
@@ -302,7 +305,7 @@ pub const TieredCompactionController = struct {
         // trying to reduce sorted runs without respecting size ratio
         const num_tiers_to_take = @min(state.levels.items.len, self.options.max_merge_width orelse std.math.maxInt(usize));
         std.debug.print("compaction triggered by reducing sorted runs\n", .{});
-        var tiers = try std.ArrayList(std.ArrayList(usize)).initCapacity(state.allocator, num_tiers_to_take);
+        var tiers = try std.ArrayList(storage.LevelPtr).initCapacity(state.allocator, num_tiers_to_take);
         errdefer tiers.deinit();
         try tiers.appendSlice(state.levels.items[0..num_tiers_to_take]);
         return .{
@@ -319,7 +322,7 @@ pub const TieredCompactionController = struct {
     ) !std.ArrayList(usize) {
         std.debug.assert(state.l0_sstables.get().size() == 0);
 
-        var tier_to_remove = std.AutoHashMap(usize, std.ArrayList(usize));
+        var tier_to_remove = std.AutoHashMap(usize, std.ArrayList(usize)).init(state.allocator);
         defer tier_to_remove.deinit();
         for (task.tiers.items) |t| {
             const lv = t.get();
@@ -334,7 +337,7 @@ pub const TieredCompactionController = struct {
         for (state.levels.items) |t| {
             if (tier_to_remove.fetchRemove(t.get().level)) |tier| {
                 std.debug.assert(sliceEquals(tier.value, t.get().ssts));
-                try files_to_remove.appendSlice(tier.value);
+                try files_to_remove.appendSlice(tier.value.items);
             } else {
                 try levels.append(t.clone());
             }
@@ -343,7 +346,7 @@ pub const TieredCompactionController = struct {
                 var new_level = std.ArrayList(usize).init(state.allocator);
                 errdefer new_level.deinit();
                 try new_level.appendSlice(output);
-                levels.append(storage.LevelPtr.create(state.allocator, .{
+                try levels.append(try storage.LevelPtr.create(state.allocator, .{
                     .level = output[0],
                     .ssts = new_level,
                 }));
