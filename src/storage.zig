@@ -50,7 +50,7 @@ pub const Level = struct {
     }
 
     pub fn clear(self: *Level) void {
-        self.ssts.clearAndFree();
+        self.ssts.clearRetainingCapacity();
     }
 
     pub fn dump(self: Level) !std.ArrayList(usize) {

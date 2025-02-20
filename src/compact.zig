@@ -4,20 +4,20 @@ const storage = @import("storage.zig");
 pub const CompactionTask = union(enum) {
     force_full_compaction: ForceFullCompaction,
     simple: SimpleLeveledCompactionTask,
-    // tiered: TieredCompactionTask,
+    tiered: TieredCompactionTask,
 
     pub fn deinit(self: *CompactionTask) void {
         switch (self.*) {
             .force_full_compaction => self.force_full_compaction.deinit(),
             .simple => self.simple.deinit(),
-            // .tiered => self.tiered.deinit(),
+            .tiered => self.tiered.deinit(),
         }
     }
     pub fn compactToBottomLevel(self: CompactionTask) bool {
         return switch (self) {
             .force_full_compaction => true,
             .simple => self.simple.is_lower_level_bottom,
-            // .tiered => self.tiered.bottom_tier_included,
+            .tiered => self.tiered.bottom_tier_included,
         };
     }
 };
@@ -25,7 +25,7 @@ pub const CompactionTask = union(enum) {
 pub const CompactionOptions = union(enum) {
     no_compaction: struct {},
     simple: SimpleLeveledCompactionOptions,
-    // tiered: TieredCompactionOptions,
+    tiered: TieredCompactionOptions,
 
     pub fn is_no_compaction(self: CompactionOptions) bool {
         return switch (self) {
@@ -351,7 +351,7 @@ pub const TieredCompactionController = struct {
                 var lp = l;
                 lp.deinit();
             }
-            state.levels.clearAndFree();
+            state.levels.clearRetainingCapacity();
         }
         try state.levels.appendSlice(levels.items);
 

@@ -49,8 +49,8 @@ pub const SsTableBuilder = struct {
         for (self.meta.items) |meta| {
             meta.deinit();
         }
-        self.meta.clearAndFree();
-        self.data.clearAndFree();
+        self.meta.clearRetainingCapacity();
+        self.data.clearRetainingCapacity();
         if (self.first_key) |first_key| {
             self.allocator.free(first_key);
         }
