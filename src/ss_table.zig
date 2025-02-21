@@ -9,6 +9,7 @@ const BlockPtr = block.BlockPtr;
 const BlockIterator = block.BlockIterator;
 const BlockIteratorPtr = block.BlockIteratorPtr;
 const BlockBuilder = block.BlockBuilder;
+const BlockBuilderPtr = block.BlockBuilderPtr;
 const hash = std.hash;
 
 pub const BlockCache = lru.LruCache(.locking, struct { id: u64, blk_id: usize }, BlockPtr);
@@ -18,7 +19,7 @@ const BloomFilterPtr = smart_pointer.SmartPointer(BloomFilter);
 
 pub const SsTableBuilder = struct {
     allocator: std.mem.Allocator,
-    builder: BlockBuilder,
+    builder: BlockBuilderPtr,
     first_key: ?[]const u8,
     last_key: ?[]const u8,
     meta: std.ArrayList(BlockMeta),
@@ -32,9 +33,12 @@ pub const SsTableBuilder = struct {
         var bf = try BloomFilter.init(allocator, block_size / 3, 0.01);
         errdefer bf.deinit();
         const bp = try BloomFilterPtr.create(allocator, bf);
+        var builder = BlockBuilder.init(allocator, block_size);
+        errdefer builder.deinit();
+
         return .{
             .allocator = allocator,
-            .builder = BlockBuilder.init(allocator, block_size),
+            .builder = try BlockBuilderPtr.create(allocator, builder),
             .first_key = null,
             .last_key = null,
             .meta = std.ArrayList(BlockMeta).init(allocator),
@@ -45,7 +49,7 @@ pub const SsTableBuilder = struct {
     }
 
     pub fn reset(self: *Self) !void {
-        self.builder.reset();
+        self.builder.get().reset();
         for (self.meta.items) |meta| {
             meta.deinit();
         }
@@ -82,13 +86,13 @@ pub const SsTableBuilder = struct {
         try self.setFirstKey(key);
         try self.bloom.get().insert(key);
 
-        if (try self.builder.add(key, value)) {
+        if (try self.builder.get().add(key, value)) {
             try self.setLastKey(key);
             return;
         }
         // block is full
         try self.finishBlock();
-        std.debug.assert(try self.builder.add(key, value));
+        std.debug.assert(try self.builder.get().add(key, value));
         try self.resetFirstKey(key);
         try self.setLastKey(key);
     }
@@ -113,15 +117,12 @@ pub const SsTableBuilder = struct {
 
     // | encoded_block0 | checksum: 4 | encoded_block1 | checksum: 4 | ...... |
     fn finishBlock(self: *Self) !void {
-        if (self.builder.isEmpty()) {
+        if (self.builder.get().isEmpty()) {
             return;
         }
-        var bo = self.builder;
-        // reset block
-        defer bo.reset();
+        defer self.builder.get().reset();
 
-        self.builder = BlockBuilder.init(self.allocator, self.block_size);
-        var blk = try bo.build();
+        var blk = try self.builder.get().build();
         defer blk.deinit();
         const encoded_block = try blk.encode(self.allocator);
         defer self.allocator.free(encoded_block);
