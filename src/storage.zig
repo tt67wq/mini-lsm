@@ -1215,14 +1215,14 @@ pub const StorageInner = struct {
         std.debug.print("------------- Storage Dump -------------\n", .{});
         std.debug.print("memtable: {d}\n", .{self.state.getMemTable().getApproximateSize()});
         std.debug.print("in_mem_sstables: {d}\n", .{self.state.imm_mem_tables.items.len});
-        std.debug.print("l0_sstables: {d}\n", .{self.state.l0_sstables.items.len});
+        std.debug.print("l0_sstables: {d}\n", .{self.state.l0_sstables.get().size()});
         for (self.state.l0_sstables.get().ssts.items) |sst_id| {
             std.debug.print("{d} ", .{sst_id});
         }
         std.debug.print("\n", .{});
         for (self.state.levels.items, 1..) |level, i| {
             std.debug.print("level{d}: {d}\n", .{ i, level.get().size() });
-            for (level.items) |sst_id| {
+            for (level.get().ssts.items) |sst_id| {
                 std.debug.print("{d} ", .{sst_id});
             }
             std.debug.print("\n", .{});
@@ -1349,7 +1349,7 @@ test "scan" {
     var storage = try StorageInner.init(std.testing.allocator, "./tmp/storage/scan", opts);
     defer storage.deinit();
 
-    for (0..16) |i| {
+    for (0..128) |i| {
         var kb: [10]u8 = undefined;
         var vb: [10]u8 = undefined;
         const kk = try std.fmt.bufPrint(&kb, "key{d:0>5}", .{i});
@@ -1357,8 +1357,9 @@ test "scan" {
         try storage.put(kk, vv);
     }
 
-    // try storage.triggerFlush();
-    // storage.dumpState();
+    try storage.triggerFlush();
+    // try storage.triggerCompaction();
+    storage.dumpState();
 
     var iter = try storage.scan(
         Bound.init("key00005", .included),

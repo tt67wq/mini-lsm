@@ -472,7 +472,7 @@ pub const SsTable = struct {
             const mid = low + (high - low) / 2;
             const first_key = self.block_metas[mid].first_key;
             const last_key = self.block_metas[mid].last_key;
-            std.debug.print("mid: {d}, first_key: {s}, last_key: {s}\n", .{ mid, first_key, last_key });
+            // std.debug.print("mid: {d}, first_key: {s}, last_key: {s}\n", .{ mid, first_key, last_key });
             if (std.mem.lessThan(u8, key, first_key)) {
                 high = mid - 1;
             } else if (std.mem.lessThan(u8, last_key, key)) {
