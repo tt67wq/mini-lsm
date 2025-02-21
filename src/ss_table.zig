@@ -815,10 +815,10 @@ test "iterator" {
             std.debug.panic("delete tmp dir failed", .{});
         };
     }
-    var sb = try SsTableBuilder.init(std.testing.allocator, 256);
+    var sb = try SsTableBuilder.init(std.testing.allocator, 64);
     defer sb.deinit();
 
-    for (0..96) |i| {
+    for (0..512) |i| {
         var kb: [64]u8 = undefined;
         var vb: [64]u8 = undefined;
         const key = try std.fmt.bufPrint(&kb, "key{:0>5}", .{i});

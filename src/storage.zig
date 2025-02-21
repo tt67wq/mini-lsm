@@ -1172,6 +1172,7 @@ pub const StorageInner = struct {
     fn compactGenerateSstFromIter(self: *Self, iter: *StorageIterator, compact_to_bottom_level: bool) !std.ArrayList(SsTablePtr) {
         var builder: SsTableBuilder = try SsTableBuilder.init(self.allocator, self.options.block_size);
         defer builder.deinit();
+
         var new_ssts = std.ArrayList(SsTablePtr).init(self.allocator);
         while (!iter.isEmpty()) {
             // std.debug.print("write {s} => {s}\n", .{ iter.key(), iter.value() });
