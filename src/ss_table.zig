@@ -856,3 +856,76 @@ test "iterator" {
     }
     std.debug.print("------------------ iter end -----------------\n", .{});
 }
+
+test "repeat builder" {
+    defer {
+        std.fs.cwd().deleteTree("./tmp/ss_repeat_builder") catch {
+            std.debug.panic("delete tmp dir failed", .{});
+        };
+    }
+    var allocator = std.testing.allocator;
+
+    var cache = try BlockCache.init(std.testing.allocator, 1024);
+    errdefer cache.deinit();
+    var cache_ptr = try BlockCachePtr.create(allocator, cache);
+    defer cache_ptr.release();
+
+    var sb = try SsTableBuilder.init(std.testing.allocator, 64);
+    defer sb.deinit();
+
+    var sst_id: usize = 1;
+
+    var new_ssts = std.ArrayList(SsTablePtr).init(allocator);
+    defer {
+        for (new_ssts.items) |sst| {
+            var sp = sst;
+            sp.deinit();
+        }
+        new_ssts.deinit();
+    }
+
+    const PathMaker = struct {
+        fn pathOfSst(_allocator: std.mem.Allocator, id: u64) ![]const u8 {
+            var buf: [9]u8 = undefined;
+            const ww = try std.fmt.bufPrint(&buf, "{d:0>5}.sst", .{id});
+            return std.fs.path.join(_allocator, &[_][]const u8{ "./tmp/ss_repeat_builder", ww });
+        }
+    };
+
+    for (0..512) |i| {
+        var kb: [64]u8 = undefined;
+        var vb: [64]u8 = undefined;
+        const key = try std.fmt.bufPrint(&kb, "key{:0>5}", .{i});
+        const value = try std.fmt.bufPrint(&vb, "value{:0>5}", .{i});
+        try sb.add(key, value);
+
+        if (sb.estimatedSize() >= 256) {
+            // reset builder
+            defer sb.reset() catch unreachable;
+            sst_id += 1;
+
+            const path = try PathMaker.pathOfSst(allocator, sst_id);
+            defer allocator.free(path);
+            std.debug.print("build sst: {s}\n", .{path});
+
+            var sst = try sb.build(sst_id, cache_ptr.clone(), path);
+            errdefer sst.deinit();
+
+            var sst_ptr = try SsTablePtr.create(allocator, sst);
+            errdefer sst_ptr.deinit();
+
+            try new_ssts.append(sst_ptr);
+        }
+    }
+    if (sb.estimatedSize() > 0) {
+        sst_id += 1;
+        const path = try PathMaker.pathOfSst(allocator, sst_id);
+        defer allocator.free(path);
+        var sst = try sb.build(sst_id, cache_ptr.clone(), path);
+        errdefer sst.deinit();
+        var sst_ptr = try SsTablePtr.create(allocator, sst);
+        errdefer sst_ptr.deinit();
+        try new_ssts.append(sst_ptr);
+    }
+    std.debug.print("num ssts: {d}\n", .{new_ssts.items.len});
+}
