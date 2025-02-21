@@ -7,6 +7,9 @@ file: ?std.fs.File,
 size: usize,
 
 pub fn init(path: []const u8, data: []const u8) !Self {
+    const dir_path = std.fs.path.dirname(path) orelse ".";
+    try std.fs.cwd().makePath(dir_path);
+
     try fs.cwd().writeFile(.{
         .sub_path = path,
         .data = data,
