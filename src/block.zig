@@ -1,6 +1,8 @@
 const std = @import("std");
 const smart_pointer = @import("smart_pointer.zig");
 
+pub const BlockBuilderPtr = smart_pointer.SmartPointer(BlockBuilder);
+
 pub const BlockBuilder = struct {
     allocator: std.mem.Allocator,
     offset_v: std.ArrayList(u16),

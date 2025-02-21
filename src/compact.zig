@@ -73,8 +73,8 @@ pub const CompactionController = union(enum) {
 
     pub fn flushToL0(self: CompactionController) bool {
         switch (self) {
-            .tiered => false,
-            inline else => true,
+            .tiered => |_| return false,
+            inline else => return true,
         }
     }
 };
@@ -326,7 +326,7 @@ pub const TieredCompactionController = struct {
         defer tier_to_remove.deinit();
         for (task.tiers.items) |t| {
             const lv = t.get();
-            try tier_to_remove.put(lv.level, lv.ssts);
+            try tier_to_remove.put(lv.tiered_id, lv.ssts);
         }
 
         var levels = std.ArrayList(storage.LevelPtr).init(state.allocator);
@@ -335,7 +335,7 @@ pub const TieredCompactionController = struct {
         var files_to_remove = std.ArrayList(usize).init(state.allocator);
         errdefer files_to_remove.deinit();
         for (state.levels.items) |t| {
-            if (tier_to_remove.fetchRemove(t.get().level)) |tier| {
+            if (tier_to_remove.fetchRemove(t.get().tiered_id)) |tier| {
                 std.debug.assert(sliceEquals(tier.value, t.get().ssts));
                 try files_to_remove.appendSlice(tier.value.items);
             } else {
@@ -347,7 +347,7 @@ pub const TieredCompactionController = struct {
                 errdefer new_level.deinit();
                 try new_level.appendSlice(output);
                 try levels.append(try storage.LevelPtr.create(state.allocator, .{
-                    .level = output[0],
+                    .tiered_id = output[0],
                     .ssts = new_level,
                 }));
             }
