@@ -758,7 +758,7 @@ test "open" {
         defer bi.deinit();
         while (!bi.isEmpty()) {
             std.debug.print("key: {s}, value: {s}\n", .{ bi.key(), bi.value() });
-            bi.next();
+            try bi.next();
         }
     }
 
