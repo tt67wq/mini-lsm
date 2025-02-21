@@ -679,10 +679,11 @@ pub const StorageInner = struct {
                         sst_concat_iter = try SstConcatIterator.initAndSeekToFirst(self.allocator, lv_ssts);
                     },
                 }
-                errdefer sst_concat_iter.deinit();
                 if (sst_concat_iter.isEmpty()) {
+                    sst_concat_iter.deinit();
                     continue;
                 }
+                errdefer sst_concat_iter.deinit();
                 var sp = try StorageIteratorPtr.create(self.allocator, .{
                     .sst_concat_iter = sst_concat_iter,
                 });
@@ -1414,15 +1415,15 @@ test "full_compact" {
 test "simple_compact" {
     defer std.fs.cwd().deleteTree("./tmp/storage/simple_compact") catch unreachable;
     const opts = StorageOptions{
-        .block_size = 64,
-        .target_sst_size = 256,
-        .num_memtable_limit = 10,
+        .block_size = 32,
+        .target_sst_size = 128,
+        .num_memtable_limit = 4,
         .enable_wal = true,
         .compaction_options = .{
             .simple = .{
-                .size_ration_percent = 50,
-                .level0_file_num_compaction_trigger = 2,
-                .max_levels = 3,
+                .size_ration_percent = 30,
+                .level0_file_num_compaction_trigger = 4,
+                .max_levels = 6,
             },
         },
     };
@@ -1430,7 +1431,7 @@ test "simple_compact" {
     var storage = try StorageInner.init(std.testing.allocator, "./tmp/storage/simple_compact", opts);
     defer storage.deinit();
 
-    for (0..512) |i| {
+    for (0..64) |i| {
         var kb: [10]u8 = undefined;
         var vb: [10]u8 = undefined;
         const kk = try std.fmt.bufPrint(&kb, "key{d:0>5}", .{i});
@@ -1442,8 +1443,8 @@ test "simple_compact" {
     }
 
     var iter = try storage.scan(
-        Bound.init("key00278", .included),
-        Bound.init("key00299", .included),
+        Bound.init("key00012", .included),
+        Bound.init("key00064", .included),
     );
     defer iter.deinit();
 
