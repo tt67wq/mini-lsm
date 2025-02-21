@@ -831,7 +831,7 @@ test "iterator" {
     var cache_ptr = try BlockCachePtr.create(std.testing.allocator, cache);
     defer cache_ptr.release();
 
-    var tb = try sb.build(1, cache_ptr, "./tmp/ss_iter.sst");
+    var tb = try sb.build(1, cache_ptr.clone(), "./tmp/ss_iter.sst");
     errdefer tb.deinit();
     var tb_ptr = try SsTablePtr.create(std.testing.allocator, tb);
     defer tb_ptr.release();
