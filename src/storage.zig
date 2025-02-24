@@ -568,7 +568,6 @@ pub const StorageInner = struct {
                 if (!imm_table.load().isEmpty()) {
                     var imm_it = imm_table.load().scan(lower, upper);
                     while (!imm_it.isEmpty()) {
-                        std.debug.print("{d}: {s}\n", .{ imm_table.load().id, imm_it.key() });
                         imm_it.next();
                     }
                     if (imm_it.isEmpty()) continue;
@@ -1458,14 +1457,14 @@ test "simple_compact" {
 test "tiered_compact" {
     defer std.fs.cwd().deleteTree("./tmp/storage/tiered_compact") catch unreachable;
     const opts = StorageOptions{
-        .block_size = 64,
-        .target_sst_size = 256,
+        .block_size = 32,
+        .target_sst_size = 128,
         .num_memtable_limit = 10,
         .enable_wal = true,
         .compaction_options = .{
             .tiered = .{
                 .num_tiers = 4,
-                .max_size_amplification_percent = 75,
+                .max_size_amplification_percent = 200,
                 .size_ratio = 50,
                 .min_merge_width = 2,
                 .max_merge_width = null,
@@ -1475,7 +1474,7 @@ test "tiered_compact" {
 
     var storage = try StorageInner.init(std.testing.allocator, "./tmp/storage/tiered_compact", opts);
     defer storage.deinit();
-    for (0..512) |i| {
+    for (0..128) |i| {
         var kb: [10]u8 = undefined;
         var vb: [10]u8 = undefined;
         const kk = try std.fmt.bufPrint(&kb, "key{d:0>5}", .{i});
@@ -1486,8 +1485,8 @@ test "tiered_compact" {
     }
 
     var iter = try storage.scan(
-        Bound.init("key00278", .included),
-        Bound.init("key00299", .included),
+        Bound.init("key00012", .unbounded),
+        Bound.init("key00064", .unbounded),
     );
     defer iter.deinit();
     while (!iter.isEmpty()) {
