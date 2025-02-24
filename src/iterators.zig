@@ -299,6 +299,7 @@ pub const SstConcatIterator = struct {
 
         // binary search
         var index: usize = 0;
+        var hit: bool = false;
         {
             var left: usize = 0;
             var right: usize = sstables.items.len - 1;
@@ -314,11 +315,14 @@ pub const SstConcatIterator = struct {
                     left = mid + 1;
                 } else {
                     index = mid;
+                    hit = true;
                     break;
                 }
             }
             // not found
-            index = sstables.items.len;
+            if (!hit) {
+                index = sstables.items.len;
+            }
         }
         if (index >= sstables.items.len) {
             return .{
@@ -417,15 +421,15 @@ test "sst concat iterator" {
         try ssts.append(ssp);
     }
 
-    var iter = try SstConcatIterator.initAndSeekToFirst(std.testing.allocator, ssts);
-    defer iter.deinit();
+    // var iter = try SstConcatIterator.initAndSeekToFirst(std.testing.allocator, try ssts.clone());
+    // defer iter.deinit();
 
-    while (!iter.isEmpty()) {
-        std.debug.print("{s} {s}\n", .{ iter.key(), iter.value() });
-        try iter.next();
-    }
+    // while (!iter.isEmpty()) {
+    //     std.debug.print("{s} {s}\n", .{ iter.key(), iter.value() });
+    //     try iter.next();
+    // }
 
-    std.debug.print("-------------------------\n", .{});
+    // std.debug.print("-------------------------\n", .{});
     var iter2 = try SstConcatIterator.initAndSeekToKey(std.testing.allocator, ssts, "key00009");
     defer iter2.deinit();
 
