@@ -424,6 +424,15 @@ test "sst concat iterator" {
         std.debug.print("{s} {s}\n", .{ iter.key(), iter.value() });
         try iter.next();
     }
+
+    std.debug.print("-------------------------\n", .{});
+    var iter2 = try SstConcatIterator.initAndSeekToKey(std.testing.allocator, ssts, "key00009");
+    defer iter2.deinit();
+
+    while (!iter2.isEmpty()) {
+        std.debug.print("{s} {s}\n", .{ iter2.key(), iter2.value() });
+        try iter2.next();
+    }
 }
 
 test "two merge iterator" {
