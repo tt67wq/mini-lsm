@@ -268,9 +268,10 @@ pub const TieredCompactionController = struct {
         for (0..state.levels.items.len - 1) |i| {
             size += state.levels.items[i].get().size();
         }
+        // std.debug.print("size: {d}, last_size: {d}\n", .{ size, state.levels.items[0].get().size() });
         const space_amp_ration = @as(
             usize,
-            @intFromFloat(@as(f64, @floatFromInt(size)) / @as(f64, @floatFromInt(state.levels.getLast().get().size())) * 100.0),
+            @intFromFloat(@as(f64, @floatFromInt(size)) / @as(f64, @floatFromInt(state.levels.items[0].get().size())) * 100.0),
         );
 
         if (space_amp_ration >= self.options.max_size_amplification_percent) {
