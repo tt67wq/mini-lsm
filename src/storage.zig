@@ -858,7 +858,7 @@ pub const StorageInner = struct {
             try std.fs.cwd().deleteFile(path);
         }
         try self.syncDir();
-        // self.dumpState();
+        // try self.iterAll();
     }
 
     fn compactionLoop(self: *Self) !void {
@@ -1176,7 +1176,7 @@ pub const StorageInner = struct {
 
         var new_ssts = std.ArrayList(SsTablePtr).init(self.allocator);
         while (!iter.isEmpty()) {
-            // std.debug.print("write {s} => {s}\n", .{ iter.key(), iter.value() });
+            // std.debug.print("-----> {s} => {s}\n", .{ iter.key(), iter.value() });
             if (compact_to_bottom_level) {
                 if (iter.value().len > 0) {
                     try builder.add(iter.key(), iter.value());
@@ -1228,6 +1228,18 @@ pub const StorageInner = struct {
                 std.debug.print("{d} ", .{sst_id});
             }
             std.debug.print("\n", .{});
+        }
+    }
+
+    fn iterAll(self: *Self) !void {
+        var iter = try self.scan(
+            Bound.init("", .unbounded),
+            Bound.init("", .unbounded),
+        );
+        defer iter.deinit();
+        while (!iter.isEmpty()) {
+            std.debug.print("{s}: {s}\n", .{ iter.key(), iter.value() });
+            try iter.next();
         }
     }
 };
@@ -1443,8 +1455,8 @@ test "simple_compact" {
     }
 
     var iter = try storage.scan(
-        Bound.init("key00012", .included),
-        Bound.init("key00064", .included),
+        Bound.init("key00012", .unbounded),
+        Bound.init("key00064", .unbounded),
     );
     defer iter.deinit();
 
@@ -1466,7 +1478,7 @@ test "tiered_compact" {
                 .num_tiers = 4,
                 .max_size_amplification_percent = 200,
                 .size_ratio = 50,
-                .min_merge_width = 2,
+                .min_merge_width = 4,
                 .max_merge_width = null,
             },
         },
@@ -1479,18 +1491,19 @@ test "tiered_compact" {
         var vb: [10]u8 = undefined;
         const kk = try std.fmt.bufPrint(&kb, "key{d:0>5}", .{i});
         const vv = try std.fmt.bufPrint(&vb, "val{d:0>5}", .{i});
+        std.debug.print("write {s} => {s}\n", .{ kk, vv });
         try storage.put(kk, vv);
         try storage.triggerFlush();
         try storage.triggerCompaction();
     }
 
-    var iter = try storage.scan(
-        Bound.init("key00012", .unbounded),
-        Bound.init("key00064", .unbounded),
-    );
-    defer iter.deinit();
-    while (!iter.isEmpty()) {
-        std.debug.print("key: {s} value: {s}\n", .{ iter.key(), iter.value() });
-        try iter.next();
-    }
+    // var iter = try storage.scan(
+    //     Bound.init("key00012", .unbounded),
+    //     Bound.init("key00064", .unbounded),
+    // );
+    // defer iter.deinit();
+    // while (!iter.isEmpty()) {
+    //     std.debug.print("key: {s} value: {s}\n", .{ iter.key(), iter.value() });
+    //     try iter.next();
+    // }
 }
