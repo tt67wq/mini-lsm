@@ -567,9 +567,6 @@ pub const StorageInner = struct {
             for (self.state.imm_mem_tables.items) |imm_table| {
                 if (!imm_table.load().isEmpty()) {
                     var imm_it = imm_table.load().scan(lower, upper);
-                    while (!imm_it.isEmpty()) {
-                        imm_it.next();
-                    }
                     if (imm_it.isEmpty()) continue;
                     var sp = try StorageIteratorPtr.create(
                         self.allocator,
@@ -1238,7 +1235,7 @@ pub const StorageInner = struct {
         );
         defer iter.deinit();
         while (!iter.isEmpty()) {
-            std.debug.print("{s}: {s}\n", .{ iter.key(), iter.value() });
+            std.debug.print(" -------| {s}: {s}\n", .{ iter.key(), iter.value() });
             try iter.next();
         }
     }
@@ -1491,19 +1488,19 @@ test "tiered_compact" {
         var vb: [10]u8 = undefined;
         const kk = try std.fmt.bufPrint(&kb, "key{d:0>5}", .{i});
         const vv = try std.fmt.bufPrint(&vb, "val{d:0>5}", .{i});
-        std.debug.print("write {s} => {s}\n", .{ kk, vv });
+        // std.debug.print("write {s} => {s}\n", .{ kk, vv });
         try storage.put(kk, vv);
         try storage.triggerFlush();
         try storage.triggerCompaction();
     }
 
-    // var iter = try storage.scan(
-    //     Bound.init("key00012", .unbounded),
-    //     Bound.init("key00064", .unbounded),
-    // );
-    // defer iter.deinit();
-    // while (!iter.isEmpty()) {
-    //     std.debug.print("key: {s} value: {s}\n", .{ iter.key(), iter.value() });
-    //     try iter.next();
-    // }
+    var iter = try storage.scan(
+        Bound.init("key00012", .included),
+        Bound.init("key00048", .included),
+    );
+    defer iter.deinit();
+    while (!iter.isEmpty()) {
+        std.debug.print("key: {s} value: {s}\n", .{ iter.key(), iter.value() });
+        try iter.next();
+    }
 }
