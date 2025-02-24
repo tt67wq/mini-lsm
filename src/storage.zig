@@ -630,6 +630,7 @@ pub const StorageInner = struct {
                     }
                     errdefer ss_iter.deinit();
                     if (ss_iter.isEmpty()) {
+                        ss_iter.deinit();
                         continue;
                     }
                     var sp = try StorageIteratorPtr.create(self.allocator, .{
