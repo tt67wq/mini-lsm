@@ -47,6 +47,10 @@ pub const Level = struct {
         };
     }
 
+    pub fn items(self: Level) []usize {
+        return self.ssts.items;
+    }
+
     pub fn deinit(self: Level) void {
         self.ssts.deinit();
     }

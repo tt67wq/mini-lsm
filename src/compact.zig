@@ -366,3 +366,117 @@ pub const TieredCompactionController = struct {
         return files_to_remove;
     }
 };
+
+// --------------- leveled compaction -----------------
+
+const LeveledCompactionOptions = struct {
+    level_size_multiplier: usize,
+    level0_file_num_compaction_trigger: usize,
+    max_levels: usize,
+    base_level_size_mb: usize,
+};
+
+pub const LeveledCompactionTask = struct {
+    upper_level: ?usize,
+    upper_level_sst_ids: std.ArrayList(usize),
+    lower_level: usize,
+    lower_level_sst_ids: std.ArrayList(usize),
+    is_lower_level_bottom: bool,
+
+    pub fn deinit(self: *LeveledCompactionTask) void {
+        self.upper_level_sst_ids.deinit();
+        self.lower_level_sst_ids.deinit();
+    }
+};
+
+pub const LeveledCompactionController = struct {
+    options: LeveledCompactionOptions,
+
+    pub fn init(options: LeveledCompactionOptions) LeveledCompactionController {
+        return .{ .options = options };
+    }
+
+    fn generateCompactionTask(self: LeveledCompactionController, state: *storage.StorageState) !?LeveledCompactionTask {
+        // step1:compute targe
+        var real_level_size = try std.ArrayList(usize).initCapacity(state.allocator, self.options.max_levels);
+        var base_level = self.options.max_levels;
+        for (0..self.options.max_levels) |i| {
+            var level_size_sum: usize = 0;
+            for (state.levels.items[i].get().ssts.items) |sst_id| {
+                level_size_sum += state.sstables.get(sst_id).?.get().tableSize();
+            }
+            try real_level_size.append(level_size_sum);
+        }
+        const base_level_size_bytes = self.options.base_level_size_mb * 1024 * 1024;
+
+        // select base level and compute target level size
+        var target_level_size = try std.ArrayList(usize).initCapacity(state.allocator, self.options.max_levels);
+        target_level_size.items[self.options.max_levels - 1] = @max(real_level_size.items[self.options.max_levels - 1], base_level_size_bytes);
+
+        for (0..self.options.max_levels - 1) |i| {
+            const j = self.options.max_levels - 1 - i;
+            const next_level_size = target_level_size.items[j + 1];
+            const this_level_size = next_level_size / self.options.level_size_multiplier;
+            if (next_level_size > base_level_size_bytes) target_level_size.items[j] = this_level_size;
+            if (target_level_size.items[j] > 0) base_level = j + 1;
+        }
+
+        // flush l0 sst is first priority
+        if (state.l0_sstables.get().size() >= self.options.level0_file_num_compaction_trigger) {
+            std.debug.print("Flushing L0 SSTables To Base Level\n", .{});
+            return .{
+                .upper_level = null,
+                .upper_level_sst_ids = try state.l0_sstables.get().dump(),
+                .lower_level = base_level,
+                .lower_level_sst_ids = try state.l0_sstables.get().dump(),
+                .is_lower_level_bottom = base_level == self.options.max_levels,
+            };
+        }
+    }
+
+    fn findOverlappingSsts(
+        _: *LeveledCompactionTask,
+        state: *storage.StorageState,
+        sst_ids: []const usize,
+        in_level: usize,
+    ) !std.ArrayList(usize) {
+        var begin_key: []const u8 = undefined;
+        for (sst_ids, 0..) |sst_id, i| {
+            const sst = state.sstables.get(sst_id).?.get();
+            if (i == 0) {
+                begin_key = sst.firstKey();
+            } else if (std.mem.lessThan(u8, sst.firstKey(), begin_key)) {
+                begin_key = sst.firstKey();
+            }
+        }
+
+        var end_key: []const u8 = undefined;
+        for (sst_ids, 0..) |sst_id, i| {
+            const sst = state.sstables.get(sst_id).?.get();
+            if (i == 0) {
+                end_key = sst.lastKey();
+            } else if (std.mem.lessThan(u8, end_key, sst.lastKey())) {
+                end_key = sst.lastKey();
+            }
+        }
+
+        var overlapping_ssts = std.ArrayList(usize).init(state.allocator);
+        for (state.levels.items[in_level - 1].get().items()) |sst_id| {
+            const sst = state.sstables.get(sst_id).?.get();
+            const first_key = sst.firstKey();
+            const last_key = sst.lastKey();
+            if (!std.mem.lessThan(u8, begin_key, last_key) and !(std.lessThan(u8, end_key, first_key))) {
+                try overlapping_ssts.append(sst_id);
+            }
+        }
+
+        return overlapping_ssts;
+    }
+
+    fn applyCompactionResult(
+        _: LeveledCompactionController,
+        state: *storage.StorageState,
+        task: LeveledCompactionTask,
+        output: []usize,
+    ) !std.ArrayList(usize) {}
+};
