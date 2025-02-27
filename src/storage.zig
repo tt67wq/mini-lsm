@@ -67,6 +67,10 @@ pub const Level = struct {
         return self.ssts.append(sst_id);
     }
 
+    pub fn appendSlice(self: *Level, sst_ids: []usize) !void {
+        return self.ssts.appendSlice(sst_ids);
+    }
+
     pub fn size(self: Level) usize {
         return self.ssts.items.len;
     }
@@ -843,6 +847,7 @@ pub const StorageInner = struct {
                 &self.state,
                 task,
                 output.items,
+                false,
             );
             defer file_to_remove.deinit();
 
