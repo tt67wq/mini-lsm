@@ -1150,8 +1150,34 @@ pub const StorageInner = struct {
         }
     }
     fn compactLeveled(self: *Self, task: LeveledCompactionTask) !std.ArrayList(SsTablePtr) {
-        if (task.upper_level) |upper_level| {
-            _ = upper_level;
+        if (task.upper_level) |_| {
+            var upper_ssts = try std.ArrayList(SsTablePtr).initCapacity(self.allocator, task.upper_level_sst_ids.items.len);
+            errdefer upper_ssts.deinit();
+            for (task.upper_level_sst_ids.items) |sst_id| {
+                try upper_ssts.append(self.state.sstables.get(sst_id).?.clone());
+            }
+            var upper_iter = try SstConcatIterator.initAndSeekToFirst(self.allocator, upper_ssts);
+            errdefer upper_iter.deinit();
+
+            var lower_ssts = try std.ArrayList(SsTablePtr).initCapacity(self.allocator, task.lower_level_sst_ids.items.len);
+            errdefer lower_ssts.deinit();
+            for (task.lower_level_sst_ids.items) |sst_id| {
+                lower_ssts.append(self.state.sstables.get(sst_id).?.clone());
+            }
+
+            var lower_iter = try SstConcatIterator.initAndSeekToFirst(self.allocator, lower_ssts);
+            errdefer lower_iter.deinit();
+
+            var two_merge_iter = try TwoMergeIterator.init(
+                try StorageIteratorPtr.create(self.allocator, upper_iter),
+                try StorageIteratorPtr.create(self.allocator, lower_iter),
+            );
+            errdefer two_merge_iter.deinit();
+
+            var iter = StorageIterator{ .two_merge_iter = two_merge_iter };
+            defer iter.deinit();
+
+            return self.compactGenerateSstFromIter(&iter, task.is_lower_level_bottom);
         } else {
             var upper_iters = try std.ArrayList(StorageIteratorPtr).initCapacity(self.allocator, task.upper_level_sst_ids.items.len);
             defer upper_iters.deinit();
