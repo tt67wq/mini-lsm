@@ -98,7 +98,13 @@ pub const StorageState = struct {
                 const lv = Level.init(0, allocator);
                 try levels.append(try LevelPtr.create(allocator, lv));
             },
-            .simple, .leveled => |option| {
+            .simple => |option| {
+                for (0..option.max_levels) |_| {
+                    const lv = Level.init(0, allocator);
+                    try levels.append(try LevelPtr.create(allocator, lv));
+                }
+            },
+            .leveled => |option| {
                 for (0..option.max_levels) |_| {
                     const lv = Level.init(0, allocator);
                     try levels.append(try LevelPtr.create(allocator, lv));
@@ -1162,15 +1168,15 @@ pub const StorageInner = struct {
             var lower_ssts = try std.ArrayList(SsTablePtr).initCapacity(self.allocator, task.lower_level_sst_ids.items.len);
             errdefer lower_ssts.deinit();
             for (task.lower_level_sst_ids.items) |sst_id| {
-                lower_ssts.append(self.state.sstables.get(sst_id).?.clone());
+                try lower_ssts.append(self.state.sstables.get(sst_id).?.clone());
             }
 
             var lower_iter = try SstConcatIterator.initAndSeekToFirst(self.allocator, lower_ssts);
             errdefer lower_iter.deinit();
 
             var two_merge_iter = try TwoMergeIterator.init(
-                try StorageIteratorPtr.create(self.allocator, upper_iter),
-                try StorageIteratorPtr.create(self.allocator, lower_iter),
+                try StorageIteratorPtr.create(self.allocator, .{ .sst_concat_iter = upper_iter }),
+                try StorageIteratorPtr.create(self.allocator, .{ .sst_concat_iter = lower_iter }),
             );
             errdefer two_merge_iter.deinit();
 
@@ -1185,24 +1191,24 @@ pub const StorageInner = struct {
             for (task.upper_level_sst_ids.items) |sst_id| {
                 var iter = try SsTableIterator.initAndSeekToFirst(self.allocator, self.state.sstables.get(sst_id).?.clone());
                 errdefer iter.deinit();
-                try upper_iters.append(try StorageIteratorPtr.create(self.allocator, iter));
+                try upper_iters.append(try StorageIteratorPtr.create(self.allocator, .{ .ss_table_iter = iter }));
             }
 
-            var upper_merge_iter = MergeIterators.init(self.allocator, upper_iters);
+            var upper_merge_iter = try MergeIterators.init(self.allocator, upper_iters);
             errdefer upper_merge_iter.deinit();
 
             var lower_ssts = try std.ArrayList(SsTablePtr).initCapacity(self.allocator, task.lower_level_sst_ids.items.len);
             errdefer lower_ssts.deinit();
             for (task.lower_level_sst_ids.items) |sst_id| {
-                lower_ssts.append(self.state.sstables.get(sst_id).?.clone());
+                try lower_ssts.append(self.state.sstables.get(sst_id).?.clone());
             }
 
             var lower_iter = try SstConcatIterator.initAndSeekToFirst(self.allocator, lower_ssts);
             errdefer lower_iter.deinit();
 
             var two_merge_iter = try TwoMergeIterator.init(
-                try StorageIteratorPtr.create(self.allocator, upper_merge_iter),
-                try StorageIteratorPtr.create(self.allocator, lower_iter),
+                try StorageIteratorPtr.create(self.allocator, .{ .merge_iterators = upper_merge_iter }),
+                try StorageIteratorPtr.create(self.allocator, .{ .sst_concat_iter = lower_iter }),
             );
             errdefer two_merge_iter.deinit();
 
@@ -1562,6 +1568,47 @@ test "tiered_compact" {
     var storage = try StorageInner.init(std.testing.allocator, "./tmp/storage/tiered_compact", opts);
     defer storage.deinit();
     for (0..128) |i| {
+        var kb: [10]u8 = undefined;
+        var vb: [10]u8 = undefined;
+        const kk = try std.fmt.bufPrint(&kb, "key{d:0>5}", .{i});
+        const vv = try std.fmt.bufPrint(&vb, "val{d:0>5}", .{i});
+        // std.debug.print("write {s} => {s}\n", .{ kk, vv });
+        try storage.put(kk, vv);
+        try storage.triggerFlush();
+        try storage.triggerCompaction();
+    }
+
+    var iter = try storage.scan(
+        Bound.init("key00012", .included),
+        Bound.init("key00048", .included),
+    );
+    defer iter.deinit();
+    while (!iter.isEmpty()) {
+        std.debug.print("key: {s} value: {s}\n", .{ iter.key(), iter.value() });
+        try iter.next();
+    }
+}
+
+test "leveled compact" {
+    defer std.fs.cwd().deleteTree("./tmp/storage/leveled_compact") catch unreachable;
+    const opts = StorageOptions{
+        .block_size = 32,
+        .target_sst_size = 128,
+        .num_memtable_limit = 10,
+        .enable_wal = true,
+        .compaction_options = .{
+            .leveled = .{
+                .level_size_multiplier = 10,
+                .level0_file_num_compaction_trigger = 4,
+                .max_levels = 4,
+                .base_level_size_mb = 4,
+            },
+        },
+    };
+
+    var storage = try StorageInner.init(std.testing.allocator, "./tmp/storage/leveled_compact", opts);
+    defer storage.deinit();
+    for (0..512) |i| {
         var kb: [10]u8 = undefined;
         var vb: [10]u8 = undefined;
         const kk = try std.fmt.bufPrint(&kb, "key{d:0>5}", .{i});

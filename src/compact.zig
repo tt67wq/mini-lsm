@@ -1,5 +1,6 @@
 const std = @import("std");
 const storage = @import("storage.zig");
+const sstable = @import("ss_table.zig");
 
 pub const CompactionTask = union(enum) {
     force_full_compaction: ForceFullCompaction,
@@ -408,7 +409,7 @@ const Priority = struct {
 
     fn lessThan(context: void, a: Priority, b: Priority) bool {
         _ = context;
-        return a.priority < b.priority || (a.priority == b.priority and a.level < b.level);
+        return (a.priority < b.priority) or (a.priority == b.priority and a.level < b.level);
     }
 };
 
@@ -451,7 +452,7 @@ pub const LeveledCompactionController = struct {
                 .upper_level = null,
                 .upper_level_sst_ids = try state.l0_sstables.get().dump(),
                 .lower_level = base_level,
-                .lower_level_sst_ids = try self.findOverlappingSsts(self, state, state.l0_sstables.get().items(), base_level),
+                .lower_level_sst_ids = try self.findOverlappingSsts(state, state.l0_sstables.get().items(), base_level),
                 .is_lower_level_bottom = base_level == self.options.max_levels,
             };
         }
@@ -469,13 +470,13 @@ pub const LeveledCompactionController = struct {
             .upper_level = fp.level,
             .upper_level_sst_ids = try selected_level.dump(),
             .lower_level = fp.level + 1,
-            .lower_level_sst_ids = try self.findOverlappingSsts(self, state, selected_level.items(), fp.level + 1),
+            .lower_level_sst_ids = try self.findOverlappingSsts(state, selected_level.items(), fp.level + 1),
             .is_lower_level_bottom = fp.level + 1 == self.options.max_levels,
         };
     }
 
     fn findOverlappingSsts(
-        _: *LeveledCompactionTask,
+        _: LeveledCompactionController,
         state: *storage.StorageState,
         sst_ids: []const usize,
         in_level: usize,
@@ -505,7 +506,7 @@ pub const LeveledCompactionController = struct {
             const sst = state.sstables.get(sst_id).?.get();
             const first_key = sst.firstKey();
             const last_key = sst.lastKey();
-            if (!std.mem.lessThan(u8, begin_key, last_key) and !(std.lessThan(u8, end_key, first_key))) {
+            if (!std.mem.lessThan(u8, begin_key, last_key) and !(std.mem.lessThan(u8, end_key, first_key))) {
                 try overlapping_ssts.append(sst_id);
             }
         }
@@ -525,14 +526,14 @@ pub const LeveledCompactionController = struct {
 
         var upper_level_sst_ids = std.AutoHashMap(usize, struct {}).init(allocator);
         defer upper_level_sst_ids.deinit();
-        for (task.lower_level_sst_ids.items()) |sst_id| {
-            try upper_level_sst_ids.put(sst_id, struct {});
+        for (task.lower_level_sst_ids.items) |sst_id| {
+            try upper_level_sst_ids.put(sst_id, .{});
         }
 
         var lower_level_sst_ids = std.AutoHashMap(usize, struct {}).init(allocator);
         defer lower_level_sst_ids.deinit();
-        for (task.upper_level_sst_ids.items()) |sst_id| {
-            try lower_level_sst_ids.put(sst_id, struct {});
+        for (task.upper_level_sst_ids.items) |sst_id| {
+            try lower_level_sst_ids.put(sst_id, .{});
         }
 
         if (task.upper_level) |upper_level| {
@@ -543,7 +544,7 @@ pub const LeveledCompactionController = struct {
             }
             std.debug.assert(upper_level_sst_ids.count() == 0);
             state.levels.items[upper_level - 1].get().clear();
-            try state.levels.items[upper_level - 1].get().appendSlice(new_upper_level_ssts.items());
+            try state.levels.items[upper_level - 1].get().appendSlice(new_upper_level_ssts.items);
         } else {
             var new_l0_ssts = std.ArrayList(usize).init(allocator);
             defer new_l0_ssts.deinit();
@@ -552,11 +553,11 @@ pub const LeveledCompactionController = struct {
             }
             std.debug.assert(upper_level_sst_ids.count() == 0);
             state.l0_sstables.get().clear();
-            state.l0_sstables.get().appendSlice(new_l0_ssts.items());
+            try state.l0_sstables.get().appendSlice(new_l0_ssts.items);
         }
 
-        try files_to_remove.appendSlice(task.upper_level_sst_ids.items());
-        try files_to_remove.appendSlice(task.lower_level_sst_ids.items());
+        try files_to_remove.appendSlice(task.upper_level_sst_ids.items);
+        try files_to_remove.appendSlice(task.lower_level_sst_ids.items);
 
         var new_lower_level_ssts = std.ArrayList(usize).init(allocator);
         defer new_lower_level_ssts.deinit();
@@ -569,7 +570,7 @@ pub const LeveledCompactionController = struct {
         // Don't sort the SST IDs during recovery because actual SSTs are not loaded at that point
         if (!in_recovery) {
             const Ctx = struct {
-                sstables: std.AutoHashMap(usize, storage.SsTablePtr),
+                sstables: std.AutoHashMap(usize, sstable.SsTablePtr),
             };
             const Comparer = struct {
                 fn lessThan(context: Ctx, lhs: usize, rhs: usize) bool {
@@ -586,7 +587,7 @@ pub const LeveledCompactionController = struct {
             );
         }
         state.levels.items[task.lower_level - 1].get().clear();
-        try state.levels.items[task.lower_level - 1].get().appendSlice(new_lower_level_ssts.items());
+        try state.levels.items[task.lower_level - 1].get().appendSlice(new_lower_level_ssts.items);
         return files_to_remove;
     }
 };
