@@ -5,12 +5,14 @@ pub const CompactionTask = union(enum) {
     force_full_compaction: ForceFullCompaction,
     simple: SimpleLeveledCompactionTask,
     tiered: TieredCompactionTask,
+    leveled: LeveledCompactionTask,
 
     pub fn deinit(self: *CompactionTask) void {
         switch (self.*) {
             .force_full_compaction => self.force_full_compaction.deinit(),
             .simple => self.simple.deinit(),
             .tiered => self.tiered.deinit(),
+            .leveled => self.leveled.deinit(),
         }
     }
     pub fn compactToBottomLevel(self: CompactionTask) bool {
@@ -18,6 +20,7 @@ pub const CompactionTask = union(enum) {
             .force_full_compaction => true,
             .simple => self.simple.is_lower_level_bottom,
             .tiered => self.tiered.bottom_tier_included,
+            .leveled => self.leveled.is_lower_level_bottom,
         };
     }
 };
@@ -26,6 +29,7 @@ pub const CompactionOptions = union(enum) {
     no_compaction: struct {},
     simple: SimpleLeveledCompactionOptions,
     tiered: TieredCompactionOptions,
+    leveled: LeveledCompactionOptions,
 
     pub fn is_no_compaction(self: CompactionOptions) bool {
         return switch (self) {
@@ -39,6 +43,7 @@ pub const CompactionController = union(enum) {
     no_compaction: struct {},
     simple: SimpleLeveledCompactionController,
     tiered: TieredCompactionController,
+    leveled: LeveledCompactionController,
 
     pub fn generateCompactionTask(self: CompactionController, state: *storage.StorageState) !?CompactionTask {
         switch (self) {
@@ -48,6 +53,10 @@ pub const CompactionController = union(enum) {
             },
             .tiered => |controller| {
                 if (try controller.generateCompactionTask(state)) |task| return .{ .tiered = task };
+                return null;
+            },
+            .leveled => |controller| {
+                if (try controller.generateCompactionTask(state)) |task| return .{ .leveled = task };
                 return null;
             },
             inline else => unreachable,
@@ -61,13 +70,15 @@ pub const CompactionController = union(enum) {
         output: []usize,
         in_recovery: bool,
     ) !std.ArrayList(usize) {
-        _ = in_recovery;
         switch (self) {
             .simple => |controller| {
                 return try controller.applyCompactionResult(state, task.simple, output);
             },
             .tiered => |controller| {
                 return try controller.applyCompactionResult(state, task.tiered, output);
+            },
+            .leveled => |controller| {
+                return try controller.applyCompactionResult(state, task.leveled, output, in_recovery);
             },
             inline else => unreachable,
         }

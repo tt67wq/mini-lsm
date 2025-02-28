@@ -27,6 +27,8 @@ const SimpleLeveledCompactionController = compact.SimpleLeveledCompactionControl
 const SimpleLeveledCompactionTask = compact.SimpleLeveledCompactionTask;
 const TieredCompactionController = compact.TieredCompactionController;
 const TieredCompactionTask = compact.TieredCompactionTask;
+const LeveledCompactionController = compact.LeveledCompactionController;
+const LeveledCompactionTask = compact.LeveledCompactionTask;
 
 pub const StorageOptions = struct {
     block_size: usize,
@@ -96,7 +98,7 @@ pub const StorageState = struct {
                 const lv = Level.init(0, allocator);
                 try levels.append(try LevelPtr.create(allocator, lv));
             },
-            .simple => |option| {
+            .simple, .leveled => |option| {
                 for (0..option.max_levels) |_| {
                     const lv = Level.init(0, allocator);
                     try levels.append(try LevelPtr.create(allocator, lv));
@@ -191,6 +193,7 @@ pub const StorageInner = struct {
         const compaction_controller = switch (options.compaction_options) {
             .simple => |option| CompactionController{ .simple = SimpleLeveledCompactionController.init(option) },
             .tiered => |option| CompactionController{ .tiered = TieredCompactionController.init(option) },
+            .leveled => |option| CompactionController{ .leveled = LeveledCompactionController.init(option) },
             .no_compaction => CompactionController{ .no_compaction = .{} },
         };
 
@@ -1000,6 +1003,9 @@ pub const StorageInner = struct {
             .tiered => |t| {
                 return self.compactTiered(t);
             },
+            .leveled => |l| {
+                return self.compactLeveled(l);
+            },
         }
     }
 
@@ -1134,6 +1140,43 @@ pub const StorageInner = struct {
             var two_merge_iter = try TwoMergeIterator.init(
                 try StorageIteratorPtr.create(self.allocator, .{ .merge_iterators = upper_iter }),
                 try StorageIteratorPtr.create(self.allocator, .{ .sst_concat_iter = lower_iter }),
+            );
+            errdefer two_merge_iter.deinit();
+
+            var iter = StorageIterator{ .two_merge_iter = two_merge_iter };
+            defer iter.deinit();
+
+            return self.compactGenerateSstFromIter(&iter, task.is_lower_level_bottom);
+        }
+    }
+    fn compactLeveled(self: *Self, task: LeveledCompactionTask) !std.ArrayList(SsTablePtr) {
+        if (task.upper_level) |upper_level| {
+            _ = upper_level;
+        } else {
+            var upper_iters = try std.ArrayList(StorageIteratorPtr).initCapacity(self.allocator, task.upper_level_sst_ids.items.len);
+            defer upper_iters.deinit();
+
+            for (task.upper_level_sst_ids.items) |sst_id| {
+                var iter = try SsTableIterator.initAndSeekToFirst(self.allocator, self.state.sstables.get(sst_id).?.clone());
+                errdefer iter.deinit();
+                try upper_iters.append(try StorageIteratorPtr.create(self.allocator, iter));
+            }
+
+            var upper_merge_iter = MergeIterators.init(self.allocator, upper_iters);
+            errdefer upper_merge_iter.deinit();
+
+            var lower_ssts = try std.ArrayList(SsTablePtr).initCapacity(self.allocator, task.lower_level_sst_ids.items.len);
+            errdefer lower_ssts.deinit();
+            for (task.lower_level_sst_ids.items) |sst_id| {
+                lower_ssts.append(self.state.sstables.get(sst_id).?.clone());
+            }
+
+            var lower_iter = try SstConcatIterator.initAndSeekToFirst(self.allocator, lower_ssts);
+            errdefer lower_iter.deinit();
+
+            var two_merge_iter = try TwoMergeIterator.init(
+                try StorageIteratorPtr.create(self.allocator, upper_merge_iter),
+                try StorageIteratorPtr.create(self.allocator, lower_iter),
             );
             errdefer two_merge_iter.deinit();
 
