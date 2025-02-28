@@ -421,8 +421,10 @@ pub const LeveledCompactionController = struct {
     }
 
     fn generateCompactionTask(self: LeveledCompactionController, state: *storage.StorageState) !?LeveledCompactionTask {
+        const allocator = state.allocator;
         // step1:compute targe
         var real_level_size = try std.ArrayList(usize).initCapacity(state.allocator, self.options.max_levels);
+        defer real_level_size.deinit();
         var base_level = self.options.max_levels;
         for (0..self.options.max_levels) |i| {
             var level_size_sum: usize = 0;
@@ -434,15 +436,19 @@ pub const LeveledCompactionController = struct {
         const base_level_size_bytes = self.options.base_level_size_mb * 1024 * 1024;
 
         // select base level and compute target level size
-        var target_level_size = try std.ArrayList(usize).initCapacity(state.allocator, self.options.max_levels);
-        target_level_size.items[self.options.max_levels - 1] = @max(real_level_size.items[self.options.max_levels - 1], base_level_size_bytes);
+        var target_level_size = try allocator.alloc(usize, self.options.max_levels);
+        defer allocator.free(target_level_size);
+        target_level_size[self.options.max_levels - 1] = @max(real_level_size.items[self.options.max_levels - 1], base_level_size_bytes);
 
-        for (0..self.options.max_levels - 1) |i| {
-            const j = self.options.max_levels - 1 - i;
-            const next_level_size = target_level_size.items[j + 1];
-            const this_level_size = next_level_size / self.options.level_size_multiplier;
-            if (next_level_size > base_level_size_bytes) target_level_size.items[j] = this_level_size;
-            if (target_level_size.items[j] > 0) base_level = j + 1;
+        {
+            var i = self.options.max_levels - 2;
+            while (i >= 0) {
+                const next_level_size = target_level_size[i + 1];
+                const this_level_size = next_level_size / self.options.level_size_multiplier;
+                if (next_level_size > base_level_size_bytes) target_level_size[i] = this_level_size;
+                if (target_level_size[i] > 0) base_level = i + 1;
+                if (i > 0) i -= 1 else break;
+            }
         }
 
         // flush l0 sst is first priority
@@ -460,19 +466,21 @@ pub const LeveledCompactionController = struct {
         var priorities = try std.ArrayList(Priority).initCapacity(state.allocator, self.options.max_levels);
         defer priorities.deinit();
         for (0..self.options.max_levels) |level| {
-            const p = @as(f64, @floatFromInt(real_level_size.items[level])) / @as(f64, @floatFromInt(target_level_size.items[level]));
+            const p = @as(f64, @floatFromInt(real_level_size.items[level])) / @as(f64, @floatFromInt(target_level_size[level]));
             if (p > 1.0) try priorities.append(.{ .level = level + 1, .priority = p });
         }
         std.sort.block(Priority, priorities.items, {}, Priority.lessThan);
-        const fp = priorities.getLast();
-        const selected_level = state.levels.items[fp.level - 1].get();
-        return .{
-            .upper_level = fp.level,
-            .upper_level_sst_ids = try selected_level.dump(),
-            .lower_level = fp.level + 1,
-            .lower_level_sst_ids = try self.findOverlappingSsts(state, selected_level.items(), fp.level + 1),
-            .is_lower_level_bottom = fp.level + 1 == self.options.max_levels,
-        };
+        if (priorities.getLastOrNull()) |fp| {
+            const selected_level = state.levels.items[fp.level - 1].get();
+            return .{
+                .upper_level = fp.level,
+                .upper_level_sst_ids = try selected_level.dump(),
+                .lower_level = fp.level + 1,
+                .lower_level_sst_ids = try self.findOverlappingSsts(state, selected_level.items(), fp.level + 1),
+                .is_lower_level_bottom = fp.level + 1 == self.options.max_levels,
+            };
+        }
+        return null;
     }
 
     fn findOverlappingSsts(
@@ -526,13 +534,13 @@ pub const LeveledCompactionController = struct {
 
         var upper_level_sst_ids = std.AutoHashMap(usize, struct {}).init(allocator);
         defer upper_level_sst_ids.deinit();
-        for (task.lower_level_sst_ids.items) |sst_id| {
+        for (task.upper_level_sst_ids.items) |sst_id| {
             try upper_level_sst_ids.put(sst_id, .{});
         }
 
         var lower_level_sst_ids = std.AutoHashMap(usize, struct {}).init(allocator);
         defer lower_level_sst_ids.deinit();
-        for (task.upper_level_sst_ids.items) |sst_id| {
+        for (task.lower_level_sst_ids.items) |sst_id| {
             try lower_level_sst_ids.put(sst_id, .{});
         }
 
@@ -548,7 +556,7 @@ pub const LeveledCompactionController = struct {
         } else {
             var new_l0_ssts = std.ArrayList(usize).init(allocator);
             defer new_l0_ssts.deinit();
-            for (state.levels.items[0].get().items()) |sst_id| {
+            for (state.l0_sstables.get().items()) |sst_id| {
                 if (!upper_level_sst_ids.remove(sst_id)) try new_l0_ssts.append(sst_id);
             }
             std.debug.assert(upper_level_sst_ids.count() == 0);
@@ -561,7 +569,7 @@ pub const LeveledCompactionController = struct {
 
         var new_lower_level_ssts = std.ArrayList(usize).init(allocator);
         defer new_lower_level_ssts.deinit();
-        for (state.levels.items[1].get().items()) |sst_id| {
+        for (state.levels.items[task.lower_level - 1].get().items()) |sst_id| {
             if (!lower_level_sst_ids.remove(sst_id)) try new_lower_level_ssts.append(sst_id);
         }
         std.debug.assert(lower_level_sst_ids.count() == 0);
