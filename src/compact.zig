@@ -437,6 +437,10 @@ pub const LeveledCompactionController = struct {
 
         // select base level and compute target level size
         var target_level_size = try allocator.alloc(usize, self.options.max_levels);
+        // initialize target_level_size with zeros
+        for (0..self.options.max_levels) |i| {
+            target_level_size[i] = 0;
+        }
         defer allocator.free(target_level_size);
         target_level_size[self.options.max_levels - 1] = @max(real_level_size.items[self.options.max_levels - 1], base_level_size_bytes);
 
@@ -444,16 +448,20 @@ pub const LeveledCompactionController = struct {
             var i = self.options.max_levels - 2;
             while (i >= 0) {
                 const next_level_size = target_level_size[i + 1];
-                const this_level_size = next_level_size / self.options.level_size_multiplier;
-                if (next_level_size > base_level_size_bytes) target_level_size[i] = this_level_size;
+                if (next_level_size > base_level_size_bytes) {
+                    const this_level_size = next_level_size / self.options.level_size_multiplier;
+                    // std.debug.print("Target Level Size: {d}\n", .{this_level_size});
+                    target_level_size[i] = this_level_size;
+                }
                 if (target_level_size[i] > 0) base_level = i + 1;
                 if (i > 0) i -= 1 else break;
             }
         }
+        // std.debug.print("Base Level: {d}\n", .{base_level});
 
         // flush l0 sst is first priority
         if (state.l0_sstables.get().size() >= self.options.level0_file_num_compaction_trigger) {
-            std.debug.print("Flushing L0 SSTables To Base Level\n", .{});
+            std.debug.print("Flushing L0 SSTables To Base Level {d}\n", .{base_level});
             return .{
                 .upper_level = null,
                 .upper_level_sst_ids = try state.l0_sstables.get().dump(),
@@ -467,11 +475,23 @@ pub const LeveledCompactionController = struct {
         defer priorities.deinit();
         for (0..self.options.max_levels) |level| {
             const p = @as(f64, @floatFromInt(real_level_size.items[level])) / @as(f64, @floatFromInt(target_level_size[level]));
-            if (p > 1.0) try priorities.append(.{ .level = level + 1, .priority = p });
+            if (p > 1.0) {
+                std.debug.print("level {d}: target size {d}, real size {d}, priority {}\n", .{ level, target_level_size[level], real_level_size.items[level], p });
+                try priorities.append(.{ .level = level + 1, .priority = p });
+            }
         }
         std.sort.block(Priority, priorities.items, {}, Priority.lessThan);
         if (priorities.getLastOrNull()) |fp| {
+            // std.debug.print(
+            //     "target level size: {d}, real level size: {d}, base_level: {d}\n",
+            //     .{
+            //         target_level_size[fp.level - 1],
+            //         real_level_size.items[fp.level - 1],
+            //         base_level,
+            //     },
+            // );
             const selected_level = state.levels.items[fp.level - 1].get();
+            std.debug.print("compaction triggered by priority: {}, level: {d}\n", .{ fp.priority, fp.level });
             return .{
                 .upper_level = fp.level,
                 .upper_level_sst_ids = try selected_level.dump(),

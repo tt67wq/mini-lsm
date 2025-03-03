@@ -873,7 +873,7 @@ pub const StorageInner = struct {
             try std.fs.cwd().deleteFile(path);
         }
         try self.syncDir();
-        // try self.iterAll();
+        self.dumpState();
     }
 
     fn compactionLoop(self: *Self) !void {
@@ -1157,6 +1157,7 @@ pub const StorageInner = struct {
     }
     fn compactLeveled(self: *Self, task: LeveledCompactionTask) !std.ArrayList(SsTablePtr) {
         if (task.upper_level) |_| {
+            // std.debug.print("Compacting upper level\n", .{});
             var upper_ssts = try std.ArrayList(SsTablePtr).initCapacity(self.allocator, task.upper_level_sst_ids.items.len);
             errdefer upper_ssts.deinit();
             for (task.upper_level_sst_ids.items) |sst_id| {
@@ -1185,8 +1186,15 @@ pub const StorageInner = struct {
 
             return self.compactGenerateSstFromIter(&iter, task.is_lower_level_bottom);
         } else {
+            // std.debug.print("Compacting level 0\n", .{});
             var upper_iters = try std.ArrayList(StorageIteratorPtr).initCapacity(self.allocator, task.upper_level_sst_ids.items.len);
-            defer upper_iters.deinit();
+            defer {
+                for (upper_iters.items) |iter| {
+                    var it = iter;
+                    it.deinit();
+                }
+                upper_iters.deinit();
+            }
 
             for (task.upper_level_sst_ids.items) |sst_id| {
                 var iter = try SsTableIterator.initAndSeekToFirst(self.allocator, self.state.sstables.get(sst_id).?.clone());
@@ -1592,31 +1600,33 @@ test "tiered_compact" {
 test "leveled compact" {
     defer std.fs.cwd().deleteTree("./tmp/storage/leveled_compact") catch unreachable;
     const opts = StorageOptions{
-        .block_size = 32,
-        .target_sst_size = 128,
+        .block_size = 4096,
+        .target_sst_size = 65536,
         .num_memtable_limit = 10,
         .enable_wal = true,
         .compaction_options = .{
             .leveled = .{
-                .level_size_multiplier = 10,
-                .level0_file_num_compaction_trigger = 4,
-                .max_levels = 4,
-                .base_level_size_mb = 4,
+                .level_size_multiplier = 2,
+                .level0_file_num_compaction_trigger = 16,
+                .max_levels = 6,
+                .base_level_size_mb = 1,
             },
         },
     };
 
     var storage = try StorageInner.init(std.testing.allocator, "./tmp/storage/leveled_compact", opts);
     defer storage.deinit();
-    for (0..512) |i| {
+    for (0..262144) |i| {
         var kb: [10]u8 = undefined;
         var vb: [10]u8 = undefined;
         const kk = try std.fmt.bufPrint(&kb, "key{d:0>5}", .{i});
         const vv = try std.fmt.bufPrint(&vb, "val{d:0>5}", .{i});
         // std.debug.print("write {s} => {s}\n", .{ kk, vv });
         try storage.put(kk, vv);
-        try storage.triggerFlush();
-        try storage.triggerCompaction();
+        if (i % 96 == 0) {
+            try storage.triggerFlush();
+            try storage.triggerCompaction();
+        }
     }
 
     var iter = try storage.scan(
